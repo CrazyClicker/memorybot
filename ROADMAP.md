@@ -139,7 +139,9 @@ export interface TurnResult {
   escalationReason?: string;                                     // internal
   memoryWrites: MemoryItem[];                                    // via the remember tool
   trace: TraceStep[];                                            // tool calls with args and results, model text, usage per step
-  usage: { inputTokens: number; outputTokens: number; costUsd: number; latencyMs: number };
+  usage: TokenUsage;                                              // total over all AI SDK steps
+  costUsd?: number;                                               // absent when the model has no price entry
+  latencyMs: number;
 }
 ```
 
@@ -176,7 +178,7 @@ parallel and meet at T2.8.
 - [x] **T2.1 (M)** `src/evals/schema.ts`: zod schemas for scenario, config, results. Validation: monotonic `at`, K references exist, thread/customer references exist, `valid_until` only on `temporal`, regexes parse, `wiki_update.page` exists. `pnpm eval validate`.
 - [x] **T2.2 (S)** `src/wiki`: loader, index text for the system prompt, `read_page` tool, `update(page, text)` that appends a dated section to a per-run copy of the wiki; `search_wiki` (MiniSearch) behind a flag.
 - [x] **T2.3 (S)** `MemoryEngine` interface + `none` + `naive` (per-customer text log; `recall` returns the log newest first, token-capped). `naive` is the baseline every real engine must beat.
-- [ ] **T2.4 (M)** `runTurn`: system prompt (persona, clock, CRM record, wiki index, hydrated memory items with kind and validity, escalate-or-answer pointer, "reply in the customer's language"), AI SDK tool loop with `read_page`, `recall_memory` (read `tool|both`), `remember` (write `agent|both`; args = `kind, about, statement, valid_until?`; the runner prefixes the date, fills `learnedFrom` and forces `scope: customer`), mandatory `finish`. Max 8 steps. Unit test with a stubbed model.
+- [x] **T2.4 (M)** `runTurn`: system prompt (persona, clock, CRM record, wiki index, hydrated memory items with kind and validity, escalate-or-answer pointer, "reply in the customer's language"), AI SDK tool loop with `read_page`, `recall_memory` (read `tool|both`), `remember` (write `agent|both`; args = `kind, about, statement, valid_until?`; the runner prefixes the date, fills `learnedFrom` and forces `scope: customer`), mandatory `finish`. Max 8 steps. Unit test with a stubbed model.
 - [ ] **T2.5 (M)** `runner.ts`: executes steps in order under the scenario clock; threads in memory; on `agent_turn` hydrates via `engine.recall(customer, latestCustomerMessage, now)`, calls `runTurn`, appends `agent_reply`, passes `memoryWrites` to `engine.write`; on `consolidate` calls `engine.consolidate` for every thread with new events since the last consolidate; under `write: agent` the transcript is reduced to `coach_note` events only, so human notes are ingested in every mode and the modes differ in who extracts facts from the conversation; coach notes with `scope: product` yield `scope: shared` items; on `wiki_update` appends the K statements to the page; probes at the end. `engine.reset()` before each run. `--repeat N`.
 - [ ] **T2.6 (M)** `checks.ts` + `judge.ts`: deterministic first (`outcome`, `tolerated`, `reply.must/must_not`, `escalation.reason_must`), then judge (`uses`, `must_not_use`, `reply.rubric`, probe `recalls/must_not_recall/proposes`). One judge prompt template: fact statement + text + "does the text convey this fact? Text may be Russian or English." → `pass|partial|fail` + one-line why. Every judge call logged with its prompt.
 - [ ] **T2.7 (M)** `report.ts`: results JSON per run (`evals/results/<run-id>/<scenario>.<config>.<rep>.json`) and `REPORT.md`: one table per scenario, rows = checks, columns = configs, cells = pass rate over repeats (✓ ◐ ✗ –), totals, cost and median latency per config, a "which path learned it" column per K item (agent / consolidate / none), and a findings section listing every check where configs disagree.
