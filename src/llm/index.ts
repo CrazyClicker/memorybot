@@ -8,6 +8,7 @@ export {
   type ModelRef,
   priceFor,
   type Provider,
+  PROVIDERS,
   type TokenUsage,
   tokenUsage,
   ZERO_USAGE,

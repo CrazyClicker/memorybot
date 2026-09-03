@@ -26,8 +26,8 @@ export const COMMANDS: Readonly<Record<CommandName, CommandSpec>> = {
     summary: 'Check scenarios and configs against the schema.',
     usage: 'pnpm eval validate [--scenario <path>] [--config <path>]',
     options: {
-      scenario: { type: 'string', multiple: true, help: 'Scenario file; repeatable. Default: all of evals/scenarios.' },
-      config: { type: 'string', multiple: true, help: 'Config file; repeatable. Default: all of evals/configs.' },
+      scenario: { type: 'string', multiple: true, help: 'Scenario file; repeatable.' },
+      config: { type: 'string', multiple: true, help: 'Config file; repeatable. With neither flag, every file in evals/scenarios and evals/configs is checked.' },
     },
     task: 'T2.1',
   },

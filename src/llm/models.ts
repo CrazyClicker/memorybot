@@ -16,7 +16,8 @@
  */
 import type { LanguageModelUsage } from 'ai';
 
-export type Provider = 'openai' | 'anthropic';
+export const PROVIDERS = ['openai', 'anthropic'] as const;
+export type Provider = (typeof PROVIDERS)[number];
 
 export interface ModelRef {
   readonly provider: Provider;
