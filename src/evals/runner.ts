@@ -95,8 +95,8 @@ export async function runScenario(
     costUsd: 0,
   };
 
+  const judge = options.judge ?? createSkipJudge('no judge configured for this run');
   try {
-    const judge = options.judge ?? createSkipJudge('no judge configured for this run');
     await options.engine.reset();
     const wiki = await wikiForRun(scenario, options.wiki);
     for (const step of scenario.steps) {
@@ -114,10 +114,10 @@ export async function runScenario(
     }
     await executeProbes(scenario, options.engine, state, judge);
   } catch (error) {
-    return result(state, scenario, config, repeat, startedAt, wallTime(wallClock), errorMessage(error));
+    return result(state, scenario, config, repeat, startedAt, wallTime(wallClock), judge, errorMessage(error));
   }
 
-  return result(state, scenario, config, repeat, startedAt, wallTime(wallClock));
+  return result(state, scenario, config, repeat, startedAt, wallTime(wallClock), judge);
 }
 
 /** Sequential repeats deliberately reuse the adapter: `reset()` must prove each run is fresh. */
@@ -379,6 +379,7 @@ function result(
   repeat: number,
   startedAt: string,
   finishedAt: string,
+  judge: Judge,
   error?: string,
 ): RunResult {
   return {
@@ -386,6 +387,7 @@ function result(
     config: config.id,
     repeat,
     startedAt,
+    ...(judge.spec === undefined ? {} : { judge: judge.spec }),
     finishedAt,
     steps: state.steps,
     consolidations: state.consolidations,

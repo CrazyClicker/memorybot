@@ -19,7 +19,11 @@ import { z } from 'zod';
 
 import {
   addUsage,
+  API_KEY_ENV,
   costUsd as calculateCostUsd,
+  type Env,
+  hasApiKey,
+  modelKey,
   resolveModel,
   type TokenUsage,
   tokenUsage,
@@ -49,6 +53,8 @@ export interface JudgedChecks {
 }
 
 export interface Judge {
+  /** The model actually judging, recorded in the run result. Absent when nothing judges. */
+  readonly spec?: ModelSpec;
   /** `uses`, `must_not_use` and `reply.rubric` for one `agent_turn`. */
   turn(
     expect: Expect | undefined,
@@ -84,6 +90,44 @@ const INSTRUCTIONS = [
 ].join(' ');
 
 /**
+ * Fallback judge when the configured vendor has no key (ROADMAP D9). The strongest OpenAI
+ * model in `MODEL_PRICES`; update it when a stronger one is priced there.
+ */
+export const JUDGE_FALLBACK_MODEL = 'gpt-5.4';
+
+export interface JudgeChoice {
+  readonly spec: ModelSpec;
+  /** Set when the configured judge was unavailable; the caller should surface it. */
+  readonly warning?: string;
+}
+
+/**
+ * D9 wants the judge on a different vendor than the agent, to avoid self-preference, but a
+ * missing second key should degrade rather than block a run. Falling back means judge and
+ * agent share a vendor, which §8 says to watch for — so the fallback is announced, and the
+ * model that actually judged is recorded in the run result, not just in a console line.
+ */
+export function resolveJudgeSpec(configured: ModelSpec, env: Env = process.env): JudgeChoice {
+  if (hasApiKey(configured.provider, env)) return { spec: configured };
+  if (configured.provider !== 'openai' && hasApiKey('openai', env)) {
+    const spec: ModelSpec = {
+      provider: 'openai',
+      model: JUDGE_FALLBACK_MODEL,
+      ...(configured.temperature === undefined ? {} : { temperature: configured.temperature }),
+    };
+    return {
+      spec,
+      warning:
+        `${API_KEY_ENV[configured.provider]} is not set: judging with ${modelKey(spec)} ` +
+        `instead of ${modelKey(configured)}. Judge and agent now share a vendor; ` +
+        'read the verdicts with self-preference in mind (ROADMAP §8).',
+    };
+  }
+  // No usable key anywhere: let `createJudge` fail naming the configured model.
+  return { spec: configured };
+}
+
+/**
  * The model is resolved eagerly so a missing judge key fails before any agent call is paid
  * for, rather than half-way through a matrix run.
  */
@@ -100,7 +144,7 @@ export function createJudge(spec: ModelSpec, options: JudgeOptions = {}): Judge 
     const usage = tokenUsage(result.usage);
     return { value: result.output, usage, costUsd: calculateCostUsd(spec, usage) ?? 0 };
   };
-  return judgeWith(ask);
+  return { spec, ...judgeWith(ask) };
 }
 
 /**

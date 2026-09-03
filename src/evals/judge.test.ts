@@ -1,7 +1,13 @@
 import { MockLanguageModelV4 } from 'ai/test';
 import { describe, expect, it } from 'vitest';
 
-import { createJudge, createSkipJudge, type KnowledgeMap } from './judge.ts';
+import {
+  createJudge,
+  createSkipJudge,
+  JUDGE_FALLBACK_MODEL,
+  type KnowledgeMap,
+  resolveJudgeSpec,
+} from './judge.ts';
 import type { Expect, MemoryItem, ModelSpec, Probe } from './schema.ts';
 
 const SPEC: ModelSpec = { provider: 'anthropic', model: 'claude-sonnet-5' };
@@ -249,5 +255,44 @@ describe('judge failures', () => {
       },
     ]);
     expect(judged.costUsd).toBe(0);
+  });
+});
+
+describe('resolveJudgeSpec', () => {
+  const bothKeys = { ANTHROPIC_API_KEY: 'sk-ant', OPENAI_API_KEY: 'sk-openai' };
+
+  it('keeps the configured judge when its key is present', () => {
+    expect(resolveJudgeSpec(SPEC, bothKeys)).toEqual({ spec: SPEC });
+  });
+
+  it('falls back to the strongest OpenAI model and says the vendors now match (D9)', () => {
+    const choice = resolveJudgeSpec({ ...SPEC, temperature: 0 }, { OPENAI_API_KEY: 'sk-openai' });
+    expect(choice.spec).toEqual({
+      provider: 'openai',
+      model: JUDGE_FALLBACK_MODEL,
+      temperature: 0,
+    });
+    expect(choice.warning).toContain('ANTHROPIC_API_KEY is not set');
+    expect(choice.warning).toContain('share a vendor');
+  });
+
+  it('does not fall back onto the vendor that is already missing', () => {
+    const openaiJudge: ModelSpec = { provider: 'openai', model: 'gpt-5.4' };
+    expect(resolveJudgeSpec(openaiJudge, {})).toEqual({ spec: openaiJudge });
+  });
+
+  it('leaves the configured spec when nothing is usable, so createJudge names it', () => {
+    expect(resolveJudgeSpec(SPEC, {})).toEqual({ spec: SPEC });
+    expect(() => createJudge(resolveJudgeSpec(SPEC, {}).spec, {})).toThrow(
+      'ANTHROPIC_API_KEY is not set, needed for anthropic:claude-sonnet-5',
+    );
+  });
+});
+
+describe('judge identity', () => {
+  it('reports the model that judges, and none for the skip judge', () => {
+    const model = new MockLanguageModelV4({ doGenerate: async () => verdict('pass') });
+    expect(createJudge(SPEC, { model }).spec).toEqual(SPEC);
+    expect(createSkipJudge('no judge').spec).toBeUndefined();
   });
 });

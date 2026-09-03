@@ -424,6 +424,8 @@ export const RunResultSchema = z.strictObject({
   repeat: z.number().int().min(1),
   /** Wall clock. */
   startedAt: TimestampSchema,
+  /** The model that actually judged; absent when nothing did (D9 fallback makes these differ). */
+  judge: ModelSpecSchema.optional(),
   finishedAt: TimestampSchema.optional(),
   steps: z.array(StepResultSchema),
   consolidations: z.array(ConsolidationResultSchema),

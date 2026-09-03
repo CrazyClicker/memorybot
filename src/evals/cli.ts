@@ -6,7 +6,7 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { CliError, type CommandName, COMMANDS, parseCli } from './args.ts';
-import { createJudge, type Judge } from './judge.ts';
+import { createJudge, type Judge, resolveJudgeSpec } from './judge.ts';
 import { CONFIGS_DIR, listYamlFiles, type LoadedFile, SCENARIOS_DIR, validateFiles } from './load.ts';
 import type { MemoryEngine } from '../memory/index.ts';
 import { createMemoryEngine, runScenarioRepeats } from './runner.ts';
@@ -181,8 +181,8 @@ const run: Command = async (values) => {
   const judgeCalls = judgeCallCount(scenarios, configs, selection.repeat);
   process.stdout.write(
     `\nPlan: ${scenarios.length} scenario(s) × ${configs.length} config(s) × ` +
-      `${selection.repeat} repeat(s), ${agentCalls} agent call(s) and up to ` +
-      `${judgeCalls} judge call(s).\n`,
+      `${selection.repeat} repeat(s), ${agentCalls} agent turn(s) and up to ` +
+      `${judgeCalls} judge call(s). A turn is a tool loop: several model calls.\n`,
   );
   if (selection.all && values['yes'] !== true) {
     process.stderr.write('Full-matrix runs require --yes after reviewing the call estimate.\n');
@@ -193,10 +193,12 @@ const run: Command = async (values) => {
   // must stop the run before the first paid agent call, not half-way through the matrix.
   const runtimes = new Map<string, { engine: MemoryEngine; judge: Judge }>();
   for (const config of configs) {
+    const { spec, warning } = resolveJudgeSpec(config.judge);
+    if (warning !== undefined) process.stderr.write(`Config "${config.id}": ${warning}\n`);
     try {
       runtimes.set(config.id, {
         engine: createMemoryEngine(config.memory.engine),
-        judge: createJudge(config.judge),
+        judge: createJudge(spec),
       });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);

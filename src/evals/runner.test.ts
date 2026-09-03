@@ -424,6 +424,7 @@ describe('runScenario', () => {
     ];
     scenario.probes = undefined;
     const judge: Judge = {
+      spec: { provider: 'openai', model: 'gpt-5.4' },
       async turn() {
         return {
           checks: [{ key: 'uses:K1', verdict: 'pass', judgePrompt: 'FACT: …' }],
@@ -450,6 +451,9 @@ describe('runScenario', () => {
     ]);
     expect(result.score).toEqual({ pass: 3, partial: 0, fail: 0, skipped: 0 });
     expect(result.costUsd).toBeCloseTo(0.0015, 10);
+    // The model that actually judged, which the D9 fallback can make differ from the config.
+    expect(result.judge).toEqual({ provider: 'openai', model: 'gpt-5.4' });
+    expect(RunResultSchema.safeParse(result).success).toBe(true);
   });
 
   it('keeps an agent result and its cost when persisting memory fails afterward', async () => {
