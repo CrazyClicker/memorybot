@@ -198,10 +198,18 @@ Results go to `evals/results/<run-id>/<scenario>.<config>.<repeat>.json` (git-ig
 ```
 
 Scores are counts, not a single number: a scenario is a story, and which step failed is the
-finding. `pnpm eval report` aggregates a run directory into `REPORT.md`: one table per
-scenario (rows = checks, columns = configs, cells = pass rate over repeats), totals, cost and
-median latency per config, a "which path learned it" column per K item (`agent`,
-`consolidate`, none), and a findings section listing every check where configs disagree.
+finding. `pnpm eval report [--run <run-id>] [--out <path>]` aggregates a run directory into
+`REPORT.md`: one table per scenario (rows = checks, columns = configs, cells = pass rate over
+repeats), totals, cost and median latency per config, a "which path learned it" column per K
+item (`agent`, `consolidate`, none), and a findings section listing every check where configs
+disagree. It reads the result JSON only — no model call, so a report costs nothing and can be
+rebuilt from an old run directory at any time.
+
+Cells read `✓` every repeat passed · `◐` mixed or partial · `✗` every repeat failed · `–`
+nothing decided it (skipped, unjudged, or a run that stopped before the step). "Which path
+learned it" is lexical: a memory write is credited with a K item when it repeats at least 30%
+of that item's content words, stemmed to five characters. It says a path *wrote* something
+like the fact; whether the fact reached the merchant is the judged `uses:`/`recalls:` columns.
 
 ## 6. Runner
 

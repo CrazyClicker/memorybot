@@ -46,9 +46,10 @@ export const COMMANDS: Readonly<Record<CommandName, CommandSpec>> = {
   },
   report: {
     summary: 'Aggregate a results directory into evals/results/REPORT.md.',
-    usage: 'pnpm eval report [--run <run-id>]',
+    usage: 'pnpm eval report [--run <run-id>] [--out <path>]',
     options: {
       run: { type: 'string', help: 'Run id under evals/results (default: the newest).' },
+      out: { type: 'string', help: 'Where to write the Markdown (default: evals/results/REPORT.md).' },
     },
     task: 'T2.7',
   },

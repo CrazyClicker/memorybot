@@ -3,12 +3,20 @@
 import 'dotenv/config';
 
 import { mkdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { CliError, type CommandName, COMMANDS, parseCli } from './args.ts';
 import { createJudge, type Judge, resolveJudgeSpec } from './judge.ts';
 import { CONFIGS_DIR, listYamlFiles, type LoadedFile, SCENARIOS_DIR, validateFiles } from './load.ts';
 import type { MemoryEngine } from '../memory/index.ts';
+import {
+  buildReport,
+  latestRunId,
+  loadRunResults,
+  renderReport,
+  REPORT_FILE,
+  RESULTS_DIR,
+} from './report.ts';
 import { createMemoryEngine, runScenarioRepeats } from './runner.ts';
 import { RunResultSchema, type Config, type Scenario } from './schema.ts';
 import { hasErrors } from './validate.ts';
@@ -206,7 +214,7 @@ const run: Command = async (values) => {
     }
   }
 
-  const outputDir = join('evals/results', selection.runId);
+  const outputDir = join(RESULTS_DIR, selection.runId);
   await mkdir(outputDir, { recursive: true });
   let failed = 0;
   let written = 0;
@@ -238,10 +246,67 @@ function defaultRunId(): string {
   return new Date().toISOString().toLowerCase().replace(/[-:.]/g, '');
 }
 
+function definedValues<T>(files: readonly LoadedFile<T>[]): T[] {
+  return files.flatMap((file) => (file.value === undefined ? [] : [file.value]));
+}
+
+/**
+ * T2.7. Scenarios and configs are read for titles, K items and column order only, so a file
+ * that no longer parses is skipped rather than failing the aggregation: a report must stay
+ * producible from a run directory whose sources have since been edited.
+ */
+const report: Command = async (values) => {
+  const runId = stringValue(values['run']) ?? (await latestRunId());
+  if (runId === undefined) {
+    process.stderr.write(`No runs under ${RESULTS_DIR}. Run \`pnpm eval run\` first.\n`);
+    process.exitCode = EXIT_USAGE;
+    return;
+  }
+
+  const runDir = join(RESULTS_DIR, runId);
+  let loaded;
+  try {
+    loaded = await loadRunResults(runDir);
+  } catch (error) {
+    throw new CliError(`Cannot read ${runDir}: ${(error as Error).message}`);
+  }
+  for (const file of loaded.unreadable) {
+    process.stderr.write(`skipped  ${file.path}: ${file.problem}\n`);
+  }
+  if (loaded.results.length === 0) {
+    process.stderr.write(`No result files in ${runDir}.\n`);
+    process.exitCode = EXIT_USAGE;
+    return;
+  }
+
+  const files = await validateFiles({
+    scenarios: await listYamlFiles(SCENARIOS_DIR),
+    configs: await listYamlFiles(CONFIGS_DIR),
+  });
+  const model = buildReport({
+    runId,
+    results: loaded.results,
+    scenarios: definedValues(files.scenarios),
+    configs: definedValues(files.configs),
+    unreadable: loaded.unreadable,
+  });
+
+  const outPath = stringValue(values['out']) ?? REPORT_FILE;
+  await mkdir(dirname(outPath), { recursive: true });
+  await writeFile(outPath, renderReport(model), 'utf8');
+
+  process.stdout.write(
+    `${outPath}: run ${runId}, ${plural(model.resultCount, 'result')}, ` +
+      `${plural(model.configs.length, 'config')}, ${plural(model.scenarios.length, 'scenario')}, ` +
+      `${plural(model.findings.length, 'finding')}` +
+      `${model.errors.length === 0 ? '' : `, ${plural(model.errors.length, 'run')} with errors`}.\n`,
+  );
+};
+
 const HANDLERS: Record<CommandName, Command> = {
   validate,
   run,
-  report: notImplemented('report'),
+  report,
   'lint-wiki': notImplemented('lint-wiki'),
 };
 
