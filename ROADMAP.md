@@ -1,6 +1,6 @@
 # ROADMAP — support agent with learning memory (restart)
 
-**Status:** planning, decisions confirmed on 2026-09-03. The repo contains only `evals/` (format v1 and one hotel-domain scenario).
+**Status:** in progress. Decisions confirmed on 2026-09-03. Done so far: T0.1 (repo skeleton), T0.3 (eval format v2), T1.1–T1.3 (wiki, `wiki/README.md`, scenario 1).
 
 ## 0. Goal and milestones
 
@@ -157,7 +157,7 @@ parallel and meet at T2.8.
 
 ### T0 — Setup (Track A)
 
-- [ ] **T0.1 (S)** Repo skeleton: pnpm, TypeScript strict, `tsx`, vitest, `.env.example` with `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` (judge, optional), `XMEMORY_API_KEY`. Scripts: `pnpm eval validate|run|report|lint-wiki`, `pnpm test`.
+- [x] **T0.1 (S)** Repo skeleton: pnpm, TypeScript strict, `tsx`, vitest, `.env.example` with `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` (judge, optional), `XMEMORY_API_KEY`. Scripts: `pnpm eval validate|run|report|lint-wiki`, `pnpm test`.
 - [ ] **T0.2 (S)** `src/llm`: provider registry over AI SDK, `ModelRef = {provider, model}`, price table → `costUsd`. Optional disk cache keyed by hash(model, messages, tools) behind `LLM_CACHE=1` for cheap re-runs while developing checks.
 - [x] **T0.3 (S)** Rewrite `evals/README.md` as format v2 from §7. *Done when:* no references to DAL, queue, hydrator, summarizer, M5/M8, `by_config`, `shared_knowledge`.
 

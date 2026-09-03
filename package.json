@@ -1,0 +1,36 @@
+{
+  "name": "prilavok-memory-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Support agent with learning memory: evals first, dev UI second",
+  "packageManager": "pnpm@10.32.0",
+  "engines": {
+    "node": ">=20.18"
+  },
+  "scripts": {
+    "eval": "tsx src/evals/cli.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^2.0.0",
+    "@ai-sdk/openai": "^2.0.0",
+    "ai": "^5.0.0",
+    "dotenv": "^17.0.0",
+    "yaml": "^2.8.0",
+    "zod": "^4.0.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}
