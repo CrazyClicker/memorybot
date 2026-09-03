@@ -49,7 +49,7 @@ run.
 
 ```
 src/
-  llm/      provider registry, model catalogue, usage -> USD        (T0.2)
+  llm/      provider registry, model catalogue, usage -> USD, disk cache
   wiki/     loader, read_page / search_wiki tools, update()         (T2.2)
   agent/    runTurn(), system prompt, finish / remember tools       (T2.4)
   memory/   engine interface + none, naive, notes, mem0, xmemory    (T2.3, T3)

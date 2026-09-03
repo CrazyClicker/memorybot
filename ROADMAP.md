@@ -1,6 +1,6 @@
 # ROADMAP — support agent with learning memory (restart)
 
-**Status:** in progress. Decisions confirmed on 2026-09-03. Done so far: T0.1 (repo skeleton), T0.3 (eval format v2), T1.1–T1.5 (wiki, `wiki/README.md`, scenarios 1–3).
+**Status:** in progress. Decisions confirmed on 2026-09-03. Done so far: T0.1 (repo skeleton), T0.2 (`src/llm`), T0.3 (eval format v2), T1.1–T1.5 (wiki, `wiki/README.md`, scenarios 1–3).
 
 ## 0. Goal and milestones
 
@@ -36,7 +36,7 @@ Evals come first. The dev UI reuses the eval machinery instead of a separate run
 |---|---|---|
 | D1 | Domain | E-commerce platform for small merchants: **«Прилавок»**. Fictional integrations: «Оплатим» (payments), «Курьерика» (delivery), «Чек-Онлайн» (receipts). Names, customers and the wiki page list live in `DOMAIN.md`. |
 | D2 | Runtime | Node 22+, TypeScript via `tsx`, pnpm. |
-| D3 | LLM/agent layer | Vercel AI SDK (`ai`, `@ai-sdk/openai`; `@ai-sdk/anthropic` optional for the judge). |
+| D3 | LLM/agent layer | Vercel AI SDK 7: `ai@7`, `@ai-sdk/openai@4`, `@ai-sdk/anthropic@4` (judge). v7 renamed most of what older examples show — use `instructions` (not `system`), `isStepCount` (not `stepCountIs`), `generateText({output: Output.object({schema})})` (not `generateObject`, deprecated in v6), `onEnd`/`onStepEnd` (not `onFinish`/`onStepFinish`), `usage.inputTokenDetails.cacheReadTokens` (not `usage.cachedInputTokens`). `result.usage` and `result.toolCalls` total **all** steps; the last step is `result.finalStep`. Tools take `inputSchema` and no `name` (the key in `tools` is the name). The deprecated v5/v6 spellings still compile, so `tsc` will not catch them. |
 | D4 | Learning signal | `coach_note` step. `internal_discussion` is out of v1. |
 | D5 | Outcome signalling | The agent ends every turn by calling a `finish` tool with `{outcome: answer\|ask\|escalate, reply, escalation_reason?}`. `outcome` is deterministic; the judge scores only content. |
 | D6 | Wiki access | Page index (slug, title, summary) in the system prompt plus a `read_page(slug)` tool. Optional `search_wiki` via MiniSearch. |
@@ -158,7 +158,7 @@ parallel and meet at T2.8.
 ### T0 — Setup (Track A)
 
 - [x] **T0.1 (S)** Repo skeleton: pnpm, TypeScript strict, `tsx`, vitest, `.env.example` with `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` (judge, optional), `XMEMORY_API_KEY`. Scripts: `pnpm eval validate|run|report|lint-wiki`, `pnpm test`.
-- [ ] **T0.2 (S)** `src/llm`: provider registry over AI SDK, `ModelRef = {provider, model}`, price table → `costUsd`. Optional disk cache keyed by hash(model, messages, tools) behind `LLM_CACHE=1` for cheap re-runs while developing checks.
+- [x] **T0.2 (S)** `src/llm`: provider registry over AI SDK, `ModelRef = {provider, model}`, price table → `costUsd`. Optional disk cache keyed by hash(model, messages, tools) behind `LLM_CACHE=1` for cheap re-runs while developing checks.
 - [x] **T0.3 (S)** Rewrite `evals/README.md` as format v2 from §7. *Done when:* no references to DAL, queue, hydrator, summarizer, M5/M8, `by_config`, `shared_knowledge`.
 
 ### T1 — Domain content (Track B)
