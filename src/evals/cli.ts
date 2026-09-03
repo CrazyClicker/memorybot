@@ -1,12 +1,14 @@
 #!/usr/bin/env tsx
-/**
- * `pnpm eval <command>`. A command is a stub until the ROADMAP task that owns it lands; a
- * stub exits 2 and names the task, so a missing feature never looks like a passing run.
- */
+/** `pnpm eval <command>`. Unimplemented commands exit 2 and name their ROADMAP task. */
 import 'dotenv/config';
+
+import { mkdir, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 
 import { CliError, type CommandName, COMMANDS, parseCli } from './args.ts';
 import { CONFIGS_DIR, listYamlFiles, type LoadedFile, SCENARIOS_DIR, validateFiles } from './load.ts';
+import { createMemoryEngine, runScenarioRepeats } from './runner.ts';
+import { RunResultSchema, type Config, type Scenario } from './schema.ts';
 import { hasErrors } from './validate.ts';
 
 const EXIT_USAGE = 1;
@@ -28,6 +30,10 @@ const notImplemented =
 
 function stringList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [];
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined;
 }
 
 function plural(n: number, word: string): string {
@@ -72,9 +78,137 @@ const validate: Command = async (values) => {
   process.exitCode = failed > 0 ? 1 : 0;
 };
 
+interface RunSelection {
+  readonly scenarioPaths: readonly string[];
+  readonly configPaths: readonly string[];
+  readonly repeat: number;
+  readonly runId: string;
+  readonly all: boolean;
+}
+
+async function runSelection(values: Record<string, unknown>): Promise<RunSelection> {
+  const all = values['all'] === true;
+  const scenarios = stringList(values['scenario']);
+  const configs = stringList(values['config']);
+  if (all && (scenarios.length > 0 || configs.length > 0)) {
+    throw new CliError('Use either --all or explicit --scenario and --config options, not both.');
+  }
+  if (!all && (scenarios.length === 0 || configs.length === 0)) {
+    throw new CliError('Run needs --all, or at least one --scenario and one --config.');
+  }
+
+  const repeatText = stringValue(values['repeat']) ?? '1';
+  if (!/^[1-9]\d*$/.test(repeatText)) {
+    throw new CliError(`--repeat must be a positive integer, got "${repeatText}".`);
+  }
+  const repeat = Number(repeatText);
+  if (!Number.isSafeInteger(repeat)) {
+    throw new CliError(`--repeat is too large, got "${repeatText}".`);
+  }
+
+  const runId = stringValue(values['run-id']) ?? defaultRunId();
+  if (!/^[a-z0-9][a-z0-9_-]*$/.test(runId)) {
+    throw new CliError('--run-id must use lowercase letters, digits, "-" and "_".');
+  }
+
+  return {
+    scenarioPaths: all ? await listYamlFiles(SCENARIOS_DIR) : scenarios,
+    configPaths: all ? await listYamlFiles(CONFIGS_DIR) : configs,
+    repeat,
+    runId,
+    all,
+  };
+}
+
+function requiredValues<T>(files: readonly LoadedFile<T>[]): T[] {
+  return files.map((file) => {
+    if (file.value === undefined || hasErrors(file.issues)) {
+      throw new Error(`Cannot run invalid file ${file.path}`);
+    }
+    return file.value;
+  });
+}
+
+function agentCallCount(scenarios: readonly Scenario[], configs: readonly Config[], repeat: number): number {
+  const turns = scenarios.reduce(
+    (total, scenario) => total + scenario.steps.filter((step) => step.type === 'agent_turn').length,
+    0,
+  );
+  return turns * configs.length * repeat;
+}
+
+/** T2.5. Checks and judge costs remain empty until T2.6 wires them into the runner. */
+const run: Command = async (values) => {
+  const selection = await runSelection(values);
+  const files = await validateFiles({
+    scenarios: selection.scenarioPaths,
+    configs: selection.configPaths,
+  });
+  const loaded = [...files.scenarios, ...files.configs];
+  loaded.forEach(printFile);
+  if (loaded.length === 0 || loaded.some((file) => file.value === undefined || hasErrors(file.issues))) {
+    process.stderr.write('Run aborted: fix validation errors first.\n');
+    process.exitCode = EXIT_USAGE;
+    return;
+  }
+
+  const scenarios = requiredValues(files.scenarios);
+  const configs = requiredValues(files.configs);
+
+  const estimatedCalls = agentCallCount(scenarios, configs, selection.repeat);
+  process.stdout.write(
+    `\nPlan: ${scenarios.length} scenario(s) × ${configs.length} config(s) × ` +
+      `${selection.repeat} repeat(s), ${estimatedCalls} agent call(s).\n`,
+  );
+  if (selection.all && values['yes'] !== true) {
+    process.stderr.write('Full-matrix runs require --yes after reviewing the call estimate.\n');
+    process.exitCode = EXIT_USAGE;
+    return;
+  }
+  for (const config of configs) {
+    try {
+      createMemoryEngine(config.memory.engine);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new CliError(`Config "${config.id}" cannot run: ${message}.`);
+    }
+  }
+
+  const outputDir = join('evals/results', selection.runId);
+  await mkdir(outputDir, { recursive: true });
+  let failed = 0;
+  let written = 0;
+
+  for (const scenario of scenarios) {
+    for (const config of configs) {
+      const results = await runScenarioRepeats(scenario, config, selection.repeat, {
+        engine: createMemoryEngine(config.memory.engine),
+      });
+      for (const result of results) {
+        const parsed = RunResultSchema.parse(result);
+        const path = join(outputDir, `${scenario.id}.${config.id}.${result.repeat}.json`);
+        await writeFile(path, `${JSON.stringify(parsed, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
+        process.stdout.write(`${result.error === undefined ? 'ok  ' : 'FAIL'}  ${path}\n`);
+        if (result.error !== undefined) {
+          process.stderr.write(`      ${result.error}\n`);
+          failed += 1;
+        }
+        written += 1;
+      }
+    }
+  }
+
+  process.stdout.write(`\n${written} result file(s) written to ${outputDir}.\n`);
+  process.exitCode = failed === 0 ? 0 : 1;
+};
+
+function defaultRunId(): string {
+  return new Date().toISOString().toLowerCase().replace(/[-:.]/g, '');
+}
+
 const HANDLERS: Record<CommandName, Command> = {
   validate,
-  run: notImplemented('run'),
+  run,
   report: notImplemented('report'),
   'lint-wiki': notImplemented('lint-wiki'),
 };
@@ -96,7 +230,16 @@ async function main(): Promise<void> {
     process.stdout.write(`${parsed.text}\n`);
     return;
   }
-  await HANDLERS[parsed.name](parsed.values);
+  try {
+    await HANDLERS[parsed.name](parsed.values);
+  } catch (error) {
+    if (error instanceof CliError) {
+      process.stderr.write(`${error.message}\n\n${COMMANDS[parsed.name].usage}\n`);
+      process.exitCode = EXIT_USAGE;
+      return;
+    }
+    throw error;
+  }
 }
 
 await main();
