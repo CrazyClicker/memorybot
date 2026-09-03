@@ -27,9 +27,10 @@ not the scenario. Checks after a `wiki_update` step that promoted the item are e
 - **K2 undocumented, product.** BOM в начале файла ломает распознавание заголовка sku; существующие товары обновляются по совпадению названия; новые строки без sku пропускаются молча и не попадают в отчёт. The wiki says only: products are matched by `sku`, errors are listed in the report.
 - **K3 temporal, «Дом и сад», until 2026-09-10.** 37 товаров загружены вручную; до релиза 10 сентября сохранять «UTF-8 без BOM»; после релиза BOM удаляется автоматически и пропущенные строки попадают в отчёт. No release dates or upcoming fixes anywhere in the wiki.
 
-### `setup-from-the-question` (planned)
+### `setup-from-the-question`
 
-- **K1 personal.** A merchant uses two-stage payments and delivers only within one region. The wiki documents two-stage mode and the 7-day hold generally, never which merchant uses it.
+- **K1 personal, «Кофе-точка».** Использует двухстадийную оплату: холд при заказе, списание подтверждают вручную после обжарки; обжаривают под заказ раз в неделю по пятницам. The wiki documents two-stage mode and the 7-day hold generally, never which merchant uses it or why.
+- **K2 personal, «Кофе-точка».** Доставляет только по Томской области: одна зона («Курьерика») плюс самовывоз из цеха в Томске; заказы из других регионов не принимает. The wiki explains how to restrict delivery to a region, never which merchant did. No place names anywhere in the wiki.
 
 ### `payment-provider-incident` (planned)
 
@@ -39,13 +40,14 @@ not the scenario. Checks after a `wiki_update` step that promoted the item are e
 ## Facts that must be present (baselines the scenarios rely on)
 
 - CSV: UTF-8, delimiter `,` or `;` detected from the first line, required columns `sku`, `name`, `price`, `description` up to 5000 characters, 10 000 rows per import, existing products updated by `sku`, errors listed in the import report.
-- Payments: one-stage and two-stage mode; a hold is cancelled automatically after 7 days; payouts T+2, daily or weekly.
+- Payments: one-stage and two-stage mode; a hold is cancelled automatically after 7 days and cannot be confirmed afterwards; payouts T+2, daily or weekly.
+- Delivery: an address outside every zone sees no delivery methods and cannot order; pickup is offered only in zones where it is enabled; one region belongs to exactly one zone.
 - Support rules `P-001`…`P-007` on `pravila-podderzhki`, including P-002 (missing data after a clean import is escalated) and P-007 (known incidents are relayed, not re-escalated).
 
 ## Grep list for manual checks
 
 ```
-grep -rniE 'BOM|маркер|ufeff|молча|по названию|пропуск|сентябр|СкладУчёт|Дом и сад|ВелоДвор|Кофе-точка|Лаванда|недоступ' wiki/*.md
+grep -rniE 'BOM|маркер|ufeff|молча|по названию|пропуск|сентябр|СкладУчёт|Дом и сад|ВелоДвор|Кофе-точка|Лаванда|недоступ|Томск|обжар|Кемеров|Новосибир' wiki/*.md
 ```
 
 Expected: no matches except this README and the substring «молча» inside «по умолчанию».

@@ -21,6 +21,7 @@ notes) is Russian; code and docs are English.
 ## Names that live only in scenarios (never in the wiki)
 
 - «СкладУчёт» — a merchant's desktop inventory tool that exports CSV.
+- Place names (Томск and Томская область, home of «Кофе-точка»; buyers from Кемерово and Новосибирск) are real geography used only in scenarios; the wiki names no places.
 - Merchants (eval-world ids): `dom_i_sad` «Дом и сад» (товары для дома, «Бизнес»), `velo_dvor` «ВелоДвор» (велозапчасти, «Старт»), `kofe_tochka` «Кофе-точка» (обжарщик кофе, «Старт»), `lavanda` «Лаванда» (косметика ручной работы, «Бизнес»).
 - Engineers: `eng.oleg`, `eng.dasha`.
 

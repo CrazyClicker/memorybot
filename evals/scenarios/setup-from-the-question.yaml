@@ -1,0 +1,236 @@
+# Scenario: learn a merchant's setup from what they say in passing while asking
+# an ordinary question, then reuse it on later tickets without asking again.
+#
+# Learning source 1 only: no escalation, no human reply, no coach note. The wiki
+# answers the first question (an address outside every delivery zone sees no
+# delivery methods). The same message also states the merchant's setup:
+# two-stage payments because coffee is roasted to order (K1, pure background)
+# and delivery only within one region (K2, the subject of the question).
+#
+# This is the scenario that separates the write paths. Under `write: agent` the
+# agent must call `remember` during t1-agent with no human note to lean on;
+# under `write: consolidate` the engine must extract the same facts from a
+# transcript that is one customer message and one agent reply. The later
+# tickets need the setup without restating it: the correct answer to thread B
+# flips with the payment mode, and thread C is answered by the region alone.
+# Thread D is another merchant asking thread B's question: the agent must not
+# assume «Кофе-точка»'s setup for them.
+
+id: setup-from-the-question
+title: Setup mentioned in passing — remember it, answer later tickets without asking again
+tags: [payments, delivery, "memory:personal", write-paths]
+
+world:
+  knowledge_base: wiki
+  clock: 2026-09-01T10:00:00Z
+  # Profiles deliberately omit payment mode and delivery regions: the CRM
+  # record is a reference source the agent always sees, so it would leak K1/K2.
+  customers:
+    kofe_tochka:
+      name: Кофе-точка
+      profile: >-
+        Обжарщик кофе, тариф «Старт», около 30 позиций.
+        Контактное лицо: Антон, владелец.
+    lavanda:
+      name: Лаванда
+      profile: >-
+        Косметика ручной работы, тариф «Бизнес», около 150 позиций.
+        Контактное лицо: Ольга, владелица.
+
+knowledge:
+  K1:
+    kind: personal
+    about: kofe_tochka
+    statement: >-
+      «Кофе-точка» использует двухстадийную оплату: при оформлении заказа
+      сумма холдируется на карте покупателя, а списание магазин подтверждает
+      вручную, когда кофе обжарен и готов к отправке. Обжаривают под заказ,
+      раз в неделю по пятницам.
+    source: [t1-open]
+
+  K2:
+    kind: personal
+    about: kofe_tochka
+    statement: >-
+      «Кофе-точка» доставляет только по Томской области: в панели настроена
+      одна зона доставки с Томской областью («Курьерика») плюс самовывоз из
+      обжарочного цеха в Томске. Заказы из других регионов магазин
+      сознательно не принимает.
+    source: [t1-open]
+
+steps:
+
+  # ---- Thread A: an ordinary question, the setup stated in passing --------
+  - id: t1-open
+    type: customer_message
+    thread: tkt_kofe_tochka_1
+    customer: kofe_tochka
+    at: 2026-09-01T10:15:00Z
+    content: |
+      Здравствуйте! Мы «Кофе-точка», обжарщики из Томска, на «Прилавке»
+      вторую неделю. Обжариваем под заказ раз в неделю, по пятницам, поэтому
+      оплату включили двухстадийную: покупатель оформляет заказ, а списание
+      подтверждаем, когда кофе обжарен и уезжает в доставку. Возим пока
+      только по Томской области, одна зона, плюс самовывоз из цеха.
+      Вопрос: вчера покупатель из Кемерово написал, что у него при
+      оформлении нет ни одного способа доставки и заказ не проходит. Это так
+      и должно быть при нашей настройке или мы что-то сломали?
+
+  - id: t1-agent
+    type: agent_turn
+    thread: tkt_kofe_tochka_1
+    note: >-
+      Answerable from the wiki page «Доставка и зоны»: an address outside
+      every zone sees no delivery methods and cannot order. No escalation rule
+      applies. Learning happens here and only here: under write: agent the
+      agent must remember the setup now (K1 is background, K2 is the subject
+      of the question); under write: consolidate the engine must extract it
+      at consolidate-1 from this message and the reply.
+    expect:
+      outcome: answer
+      reply:
+        must: ["/зон/i"]
+        rubric: >-
+          Confirms this is expected behaviour, not a fault: when the buyer's
+          address is outside every delivery zone the storefront shows no
+          delivery methods and the order cannot be placed, and this merchant's
+          only zone is Томская область. May mention how to add a region to a
+          zone if they want such orders. Does not escalate and does not ask
+          the merchant to describe their zones again.
+
+  - id: t1-close
+    type: close_ticket
+    thread: tkt_kofe_tochka_1
+    at: 2026-09-02T09:00:00Z
+
+  # ---- Consolidation: memory is written -----------------------------------
+  # Under write: agent this pass sees no coach_note events and writes nothing;
+  # everything the agent knows later came from its own `remember` call above.
+  - id: consolidate-1
+    type: consolidate
+    at: 2026-09-07T09:00:00Z
+
+  # ---- Thread B: the answer depends on the payment mode (K1) --------------
+  # 2026-09-17 is a Thursday: the order was placed on Tuesday the 15th, the
+  # hold expires on Tuesday the 22nd, the next roast is Friday the 18th.
+  - id: t2-open
+    type: customer_message
+    thread: tkt_kofe_tochka_2
+    customer: kofe_tochka
+    at: 2026-09-17T09:30:00Z
+    content: |
+      Снова «Кофе-точка». Покупатель оформил заказ во вторник, а вчера
+      написал, что срочно уезжает и заберёт кофе только недели через две.
+      Можно просто оставить его заказ висеть как есть до возвращения, а
+      обжарить уже ближе к делу? Или нам что-то нужно нажать в панели?
+
+  - id: t2-agent
+    type: agent_turn
+    thread: tkt_kofe_tochka_2
+    note: >-
+      Without K1 the honest answers are "yes, leave it" (wrong for this
+      merchant: the hold dies in 7 days) or "which payment mode do you use?"
+      (an ask). With K1 plus the wiki hold rule the answer is specific.
+    expect:
+      outcome: answer
+      uses: [K1]
+      reply:
+        must: ["/холд|блокир/i", "/7 дн|семи дн|семь дн/i"]
+        rubric: >-
+          Knows without asking that this merchant uses two-stage payments.
+          Warns that the hold on the buyer's card is cancelled automatically
+          7 days after the order, the money returns to the buyer and the order
+          becomes «Отменён», after which the charge can no longer be
+          confirmed. Recommends confirming the charge in the order card before
+          the 7 days run out (for example after the next roast) and handing
+          the coffee over later, or cancelling and asking the buyer to order
+          again closer to the date. Fail if it tells the merchant to simply
+          leave the order waiting, or asks which payment mode they use.
+
+  # ---- Thread C: the answer is the delivery region (K2) -------------------
+  - id: t3-open
+    type: customer_message
+    thread: tkt_kofe_tochka_3
+    customer: kofe_tochka
+    at: 2026-09-23T11:20:00Z
+    content: |
+      «Кофе-точка», Антон. Нам написал покупатель из Новосибирска: положил
+      кофе в корзину, а при оформлении ни одного способа доставки, даже
+      самовывоза нет. Спрашивает, не сломался ли у нас сайт. Что ему
+      ответить?
+
+  - id: t3-agent
+    type: agent_turn
+    thread: tkt_kofe_tochka_3
+    note: >-
+      The wiki explains the mechanism (outside every zone → no methods, pickup
+      only in zones where it is enabled) but not that this merchant's zone is
+      Томская область. Without K2 the agent can only hedge or ask.
+    expect:
+      outcome: answer
+      uses: [K2]
+      reply:
+        must: ["/томск/i"]
+        rubric: >-
+          States as a known fact that this merchant delivers only within
+          Томская область (a single delivery zone plus pickup from the
+          roastery), so an address in Novosibirsk falls outside every zone and
+          the storefront hides all delivery methods by design: nothing is
+          broken. May explain how to add the region to a zone if they want
+          such orders. Fail if it asks the merchant which regions they deliver
+          to, or treats it as a fault to investigate.
+
+  # ---- Thread D: another merchant asks thread B's question (isolation) ----
+  - id: t4-open
+    type: customer_message
+    thread: tkt_lavanda_1
+    customer: lavanda
+    at: 2026-09-23T12:05:00Z
+    content: |
+      Здравствуйте, «Лаванда». Покупательница оформила заказ и просит
+      отложить отправку недели на две, будет в отъезде. Можно оставить заказ
+      в «В обработке» и отправить, когда вернётся?
+
+  - id: t4-agent
+    type: agent_turn
+    thread: tkt_lavanda_1
+    note: >-
+      Isolation check. K1/K2 belong to «Кофе-точка» and must never surface
+      here. Nothing in the wiki or the CRM record says which payment mode
+      «Лаванда» uses, so the agent has to ask or answer for both modes.
+    expect:
+      outcome: answer
+      tolerated: [ask]
+      must_not_use: [K1, K2]
+      reply:
+        must_not: ["/кофе-точка/i", "/обжар/i", "/томск/i"]
+        rubric: >-
+          Does not assume this merchant's payment mode. Pass: asks whether
+          they use one-stage or two-stage payments, or covers both cases
+          (one-stage: the order can wait in «В обработке»; two-stage: the hold
+          is cancelled automatically after 7 days, so confirm the charge
+          first). Partial: answers for one mode only without claiming to know
+          this merchant's setup. Fail: asserts that this merchant uses
+          two-stage payments, or mentions another merchant.
+
+probes:
+  - id: recall-kofe-tochka
+    type: memory_recall
+    customer: kofe_tochka
+    query: "Как у «Кофе-точки» настроены оплата и доставка?"
+    expect:
+      recalls: [K1, K2]
+
+  - id: isolation-lavanda
+    type: memory_recall
+    customer: lavanda
+    query: "двухстадийная оплата обжарка под заказ доставка по Томской области"
+    expect:
+      must_not_recall: [K1, K2]
+
+  # Both items are personal: a merchant's own setup must never be proposed as
+  # documentation. Engines without proposals() report this as skipped.
+  - id: no-documentation-candidates
+    type: documentation_proposals
+    expect:
+      must_not: ["/кофе-точка/i", "/томск/i", "/обжар/i"]
