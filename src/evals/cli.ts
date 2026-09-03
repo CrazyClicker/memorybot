@@ -6,7 +6,9 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { CliError, type CommandName, COMMANDS, parseCli } from './args.ts';
+import { createJudge, type Judge } from './judge.ts';
 import { CONFIGS_DIR, listYamlFiles, type LoadedFile, SCENARIOS_DIR, validateFiles } from './load.ts';
+import type { MemoryEngine } from '../memory/index.ts';
 import { createMemoryEngine, runScenarioRepeats } from './runner.ts';
 import { RunResultSchema, type Config, type Scenario } from './schema.ts';
 import { hasErrors } from './validate.ts';
@@ -137,7 +139,27 @@ function agentCallCount(scenarios: readonly Scenario[], configs: readonly Config
   return turns * configs.length * repeat;
 }
 
-/** T2.5. Checks and judge costs remain empty until T2.6 wires them into the runner. */
+/** One judge call per judged expectation. An upper bound: probes an engine cannot serve skip. */
+function judgeCallCount(
+  scenarios: readonly Scenario[],
+  configs: readonly Config[],
+  repeat: number,
+): number {
+  const judged = scenarios.reduce((total, scenario) => {
+    const turns = scenario.steps.reduce((count, step) => {
+      if (step.type !== 'agent_turn' || step.expect === undefined) return count;
+      const { uses, must_not_use, reply } = step.expect;
+      return count + (uses?.length ?? 0) + (must_not_use?.length ?? 0) + (reply?.rubric === undefined ? 0 : 1);
+    }, 0);
+    const probes = (scenario.probes ?? []).reduce((count, probe) => {
+      if (probe.type === 'documentation_proposals') return count + (probe.expect.proposes?.length ?? 0);
+      return count + (probe.expect.recalls?.length ?? 0) + (probe.expect.must_not_recall?.length ?? 0);
+    }, 0);
+    return total + turns + probes;
+  }, 0);
+  return judged * configs.length * repeat;
+}
+
 const run: Command = async (values) => {
   const selection = await runSelection(values);
   const files = await validateFiles({
@@ -155,22 +177,30 @@ const run: Command = async (values) => {
   const scenarios = requiredValues(files.scenarios);
   const configs = requiredValues(files.configs);
 
-  const estimatedCalls = agentCallCount(scenarios, configs, selection.repeat);
+  const agentCalls = agentCallCount(scenarios, configs, selection.repeat);
+  const judgeCalls = judgeCallCount(scenarios, configs, selection.repeat);
   process.stdout.write(
     `\nPlan: ${scenarios.length} scenario(s) × ${configs.length} config(s) × ` +
-      `${selection.repeat} repeat(s), ${estimatedCalls} agent call(s).\n`,
+      `${selection.repeat} repeat(s), ${agentCalls} agent call(s) and up to ` +
+      `${judgeCalls} judge call(s).\n`,
   );
   if (selection.all && values['yes'] !== true) {
     process.stderr.write('Full-matrix runs require --yes after reviewing the call estimate.\n');
     process.exitCode = EXIT_USAGE;
     return;
   }
+  // Build every engine and judge up front: a missing API key or an unimplemented engine
+  // must stop the run before the first paid agent call, not half-way through the matrix.
+  const runtimes = new Map<string, { engine: MemoryEngine; judge: Judge }>();
   for (const config of configs) {
     try {
-      createMemoryEngine(config.memory.engine);
+      runtimes.set(config.id, {
+        engine: createMemoryEngine(config.memory.engine),
+        judge: createJudge(config.judge),
+      });
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      throw new CliError(`Config "${config.id}" cannot run: ${message}.`);
+      throw new CliError(`Config "${config.id}" cannot run: ${message}`);
     }
   }
 
@@ -181,9 +211,9 @@ const run: Command = async (values) => {
 
   for (const scenario of scenarios) {
     for (const config of configs) {
-      const results = await runScenarioRepeats(scenario, config, selection.repeat, {
-        engine: createMemoryEngine(config.memory.engine),
-      });
+      const runtime = runtimes.get(config.id);
+      if (runtime === undefined) throw new Error(`No runtime built for config "${config.id}"`);
+      const results = await runScenarioRepeats(scenario, config, selection.repeat, runtime);
       for (const result of results) {
         const parsed = RunResultSchema.parse(result);
         const path = join(outputDir, `${scenario.id}.${config.id}.${result.repeat}.json`);

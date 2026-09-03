@@ -9,6 +9,7 @@ import {
   type ThreadTranscript,
 } from '../memory/index.ts';
 import { Wiki } from '../wiki/index.ts';
+import type { Judge } from './judge.ts';
 import { RunResultSchema, type Config, type Scenario } from './schema.ts';
 import { runScenario, runScenarioRepeats, type RunAgent } from './runner.ts';
 
@@ -269,7 +270,8 @@ describe('runScenario', () => {
       startedAt: '2026-09-03T12:00:00.000Z',
       finishedAt: '2026-09-03T12:00:01.000Z',
       costUsd: 0.002,
-      score: { pass: 0, partial: 0, fail: 0, skipped: 0 },
+      // No judge in this test, so the two judged probe checks are skipped, never passed.
+      score: { pass: 0, partial: 0, fail: 0, skipped: 2 },
     });
     expect(engine.resetCount).toBe(1);
     expect(calls.map(({ input }) => ({
@@ -325,6 +327,12 @@ describe('runScenario', () => {
 
     expect(result.probes[0]?.returned?.map(({ id }) => id)).toEqual(['shared-memory']);
     expect(result.probes[1]?.returned?.map(({ id }) => id)).toEqual(['proposal']);
+    expect(result.probes.flatMap(({ checks }) =>
+      checks.map(({ key, verdict, why }) => ({ key, verdict, why })),
+    )).toEqual([
+      { key: 'recalls:K1', verdict: 'skipped', why: expect.stringContaining('no judge') },
+      { key: 'proposes:K1', verdict: 'skipped', why: expect.stringContaining('no judge') },
+    ]);
     expect(sourceWiki.readPage('help')).not.toContain('Новая подтверждённая инструкция.');
   });
 
@@ -402,6 +410,46 @@ describe('runScenario', () => {
     expect(result.steps).toHaveLength(1);
     expect(result.error).toBe('Error: model unavailable');
     expect(RunResultSchema.safeParse(result).success).toBe(true);
+  });
+
+  it('scores deterministic checks before judged ones and bills the judge to the run', async () => {
+    const scenario = fullScenario();
+    scenario.steps = [
+      scenario.steps[0]!,
+      { id: 'alpha-agent', type: 'agent_turn', thread: 'alpha-thread', expect: {
+        outcome: 'escalate',
+        uses: ['K1'],
+        reply: { must: ['/1153/'] },
+      } },
+    ];
+    scenario.probes = undefined;
+    const judge: Judge = {
+      async turn() {
+        return {
+          checks: [{ key: 'uses:K1', verdict: 'pass', judgePrompt: 'FACT: …' }],
+          usage: ZERO_USAGE,
+          costUsd: 0.0005,
+        };
+      },
+      async probe() {
+        throw new Error('no probes in this scenario');
+      },
+    };
+
+    const result = await runScenario(scenario, config(), {
+      engine: new RecordingEngine(),
+      wiki: wiki(),
+      judge,
+      runAgent: async () => turn({ outcome: 'escalate', reply: 'Заказ 1153 у инженера.' }),
+    });
+
+    expect(result.steps[0]?.checks).toEqual([
+      { key: 'outcome', verdict: 'pass' },
+      { key: 'reply.must[0]', verdict: 'pass' },
+      { key: 'uses:K1', verdict: 'pass', judgePrompt: 'FACT: …' },
+    ]);
+    expect(result.score).toEqual({ pass: 3, partial: 0, fail: 0, skipped: 0 });
+    expect(result.costUsd).toBeCloseTo(0.0015, 10);
   });
 
   it('keeps an agent result and its cost when persisting memory fails afterward', async () => {

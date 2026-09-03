@@ -11,7 +11,10 @@ import {
   type ThreadTranscript,
 } from '../memory/index.ts';
 import { loadWiki, Wiki } from '../wiki/index.ts';
+import { checkProbePatterns, checkTurn, scoreOf } from './checks.ts';
+import { createSkipJudge, type Judge } from './judge.ts';
 import type {
+  CheckResult,
   Config,
   MemoryEngineId,
   ProbeResult,
@@ -28,6 +31,12 @@ export type RunAgent = (
 
 export interface RunScenarioOptions {
   readonly engine: MemoryEngine;
+  /**
+   * Scores `uses`, `must_not_use`, `reply.rubric` and the knowledge side of the probes.
+   * Without one every judged check is reported `skipped` with that reason: a run never
+   * counts an unjudged check as a pass. `pnpm eval run` always supplies a real judge.
+   */
+  readonly judge?: Judge;
   /** Source snapshot. The runner clones it so `wiki_update` never escapes this run. */
   readonly wiki?: Wiki;
   readonly repeat?: number;
@@ -87,13 +96,23 @@ export async function runScenario(
   };
 
   try {
+    const judge = options.judge ?? createSkipJudge('no judge configured for this run');
     await options.engine.reset();
     const wiki = await wikiForRun(scenario, options.wiki);
     for (const step of scenario.steps) {
       if (step.at !== undefined) state.now = step.at;
-      await executeStep(step, scenario, config, options.engine, wiki, state, options.runAgent ?? runTurn);
+      await executeStep(
+        step,
+        scenario,
+        config,
+        options.engine,
+        wiki,
+        state,
+        options.runAgent ?? runTurn,
+        judge,
+      );
     }
-    await executeProbes(scenario, options.engine, state);
+    await executeProbes(scenario, options.engine, state, judge);
   } catch (error) {
     return result(state, scenario, config, repeat, startedAt, wallTime(wallClock), errorMessage(error));
   }
@@ -124,6 +143,7 @@ async function executeStep(
   wiki: Wiki,
   state: RunState,
   runAgent: RunAgent,
+  judge: Judge,
 ): Promise<void> {
   switch (step.type) {
     case 'customer_message': {
@@ -171,6 +191,10 @@ async function executeStep(
       const memoryWrites = turn.memoryWrites.map((item, index) =>
         agentWrite(item, thread, step.id, index, state.now),
       );
+      // Deterministic checks first (free), then the judged ones: that is also the order the
+      // report reads them in. Every expectation gets a verdict; neither gates the other.
+      const checks = checkTurn(step.expect, turn);
+      const judged = await judge.turn(step.expect, turn, scenario.knowledge);
       state.steps.push({
         id: step.id,
         thread: step.thread,
@@ -180,12 +204,12 @@ async function executeStep(
         ...(turn.escalationReason === undefined ? {} : { escalationReason: turn.escalationReason }),
         trace: turn.trace,
         memoryWrites,
-        checks: [],
+        checks: [...checks, ...judged.checks],
         usage: turn.usage,
         ...(turn.costUsd === undefined ? {} : { costUsd: turn.costUsd }),
         latencyMs: turn.latencyMs,
       });
-      state.costUsd += turn.costUsd ?? 0;
+      state.costUsd += (turn.costUsd ?? 0) + judged.costUsd;
       if (memoryWrites.length > 0) await engine.write(memoryWrites, state.now);
       return;
     }
@@ -251,26 +275,23 @@ async function executeProbes(
   scenario: Scenario,
   engine: MemoryEngine,
   state: RunState,
+  judge: Judge,
 ): Promise<void> {
   for (const probe of scenario.probes ?? []) {
-    if (probe.type === 'memory_recall') {
-      state.probes.push({
-        id: probe.id,
-        checks: [],
-        returned: await scopedRecall(engine, probe.customer, probe.query, state.now),
-      });
-      continue;
-    }
+    // `undefined` is "the engine cannot serve this", which checks and judge report as skipped.
+    const returned = probe.type === 'memory_recall'
+      ? await scopedRecall(engine, probe.customer, probe.query, state.now)
+      : engine.proposals === undefined
+        ? undefined
+        : (await engine.proposals()).map(cloneMemoryItem);
 
-    if (engine.proposals === undefined) {
-      state.probes.push({ id: probe.id, checks: [] });
-    } else {
-      state.probes.push({
-        id: probe.id,
-        checks: [],
-        returned: (await engine.proposals()).map(cloneMemoryItem),
-      });
-    }
+    const judged = await judge.probe(probe, returned, scenario.knowledge);
+    state.costUsd += judged.costUsd;
+    state.probes.push({
+      id: probe.id,
+      checks: [...checkProbePatterns(probe, returned), ...judged.checks],
+      ...(returned === undefined ? {} : { returned }),
+    });
   }
 }
 
@@ -369,10 +390,17 @@ function result(
     steps: state.steps,
     consolidations: state.consolidations,
     probes: state.probes,
-    score: { pass: 0, partial: 0, fail: 0, skipped: 0 },
+    score: scoreOf(allChecks(state)),
     costUsd: state.costUsd,
     ...(error === undefined ? {} : { error }),
   };
+}
+
+function allChecks(state: RunState): CheckResult[] {
+  return [
+    ...state.steps.flatMap((step) => step.checks),
+    ...state.probes.flatMap((probe) => probe.checks),
+  ];
 }
 
 function assertRepeat(repeat: number): void {
