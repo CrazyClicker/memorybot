@@ -19,10 +19,13 @@ keys, rubrics, code and docs are **English**.
 
 ## Setup
 
-Requires Node 20.18+ (Node 22+ recommended: the `notes` engine in T3.1 targets `node:sqlite`,
-which needs 22.5+) and pnpm 10.
+Requires Node 22.5+ (`node:sqlite`, used by the `notes` engine in T3.1) and pnpm 10.
+The version is pinned in [.nvmrc](.nvmrc); pnpm comes from corepack via the `packageManager`
+field.
 
 ```bash
+nvm use            # Node 22 from .nvmrc
+corepack enable pnpm
 pnpm install
 cp .env.example .env    # OPENAI_API_KEY is enough to start; see the file for the rest
 ```
