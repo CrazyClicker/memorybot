@@ -1,0 +1,302 @@
+# Scenario: learn why a CSV import silently dropped rows from an escalated ticket,
+# then reuse it — for the same merchant, across time, and for another merchant
+# only after a human promotes the product fact into the wiki.
+#
+# The wiki documents the CSV format and says errors are listed in the import
+# report. It does NOT know that a BOM breaks the sku header, that new rows
+# without a recognised sku are skipped silently, or that a fix is scheduled.
+# Anything the agent gets right in threads B/C/D2 it can only have learned.
+
+id: csv-import-dropped-rows
+title: CSV import silently drops rows — learn the cause, reuse it later
+tags: [import, data-loss, "memory:personal", "memory:temporal", "memory:undocumented"]
+
+world:
+  knowledge_base: wiki
+  clock: 2026-08-26T09:00:00Z
+  customers:
+    dom_i_sad:
+      name: Дом и сад
+      profile: >-
+        Магазин товаров для дома, тариф «Бизнес», около 1 200 товаров.
+        Контактное лицо: Марина, менеджер по ассортименту.
+    velo_dvor:
+      name: ВелоДвор
+      profile: >-
+        Магазин велозапчастей, тариф «Старт», около 400 товаров.
+
+knowledge:
+  K1:
+    kind: personal
+    about: dom_i_sad
+    statement: >-
+      «Дом и сад» выгружает каталог из учётной программы «СкладУчёт»: файл в
+      UTF-8 с BOM, разделитель «;», артикулы с ведущими нулями (вида 000123),
+      колонка sku в кавычках. Импорт запускают каждый понедельник утром.
+    source: [t1-open, t1-followup]
+
+  K2:
+    kind: undocumented
+    about: product
+    scope: customer
+    documentation_candidate: true
+    statement: >-
+      Если CSV-файл начинается с BOM (маркер кодировки EF BB BF), импортёр не
+      распознаёт заголовок первой колонки, обычно sku. Существующие товары при
+      этом всё равно обновляются по совпадению названия, а новые строки без
+      распознанного sku пропускаются молча: они не попадают в отчёт импорта и не
+      считаются ошибками.
+    source: [t1-coach-note]
+
+  K3:
+    kind: temporal
+    about: dom_i_sad
+    statement: >-
+      Пропущенные 37 товаров «Дом и сад» инженеры загрузили вручную 27 августа.
+      До релиза импортёра 10 сентября магазину нужно сохранять экспорт из
+      «СкладУчёт» как «UTF-8 без BOM»; после релиза импортёр будет удалять BOM
+      сам и показывать пропущенные строки в отчёте.
+    valid_until: 2026-09-10
+    source: [t1-human-reply, t1-coach-note]
+
+steps:
+
+  # ---- Thread A: the original ticket -------------------------------------
+  - id: t1-open
+    type: customer_message
+    thread: tkt_dom_i_sad_1
+    customer: dom_i_sad
+    at: 2026-08-26T09:00:00Z
+    content: |
+      Здравствуйте! Каждый понедельник загружаем каталог через импорт CSV.
+      Сегодня импорт прошёл «успешно», в отчёте ноль ошибок, но в магазине не
+      хватает 37 товаров из файла, в основном новые позиции из последнего
+      завоза. Файл выгружаем из «СкладУчёт», как обычно. Куда делись товары?
+      Покупатели уже спрашивают.
+
+  - id: t1-agent
+    type: agent_turn
+    thread: tkt_dom_i_sad_1
+    note: >-
+      P-002 in the wiki: products missing after a "successful" import is a
+      possible data-loss case and must be escalated even with a clean report.
+      Asking for the file is tolerated (P-005). Blaming the file or claiming
+      the products were imported is a fail.
+    expect:
+      outcome: escalate
+      tolerated: [ask]
+      escalation:
+        reason_must: ["/P-002|потер|пропа|данн|импорт/i"]
+      reply:
+        must_not: ["/BOM/i"]
+        rubric: >-
+          Acknowledges that products missing after an import with a clean
+          report is a case for a specialist, tells the customer someone will
+          look into it, and does not assert that the file is at fault or that
+          the products were actually imported. Bonus: asks for the file or the
+          import report id.
+
+  # After escalation the ticket is owned by a human: the following customer
+  # message is recorded, but no agent_turn is scheduled on this thread.
+  - id: t1-followup
+    type: customer_message
+    thread: tkt_dom_i_sad_1
+    customer: dom_i_sad
+    at: 2026-08-26T11:40:00Z
+    content: |
+      Прикрепляю файл. «СкладУчёт» сохраняет его в UTF-8, разделитель «;».
+      У нас артикулы с ведущими нулями вида 000123, поэтому колонку sku
+      выгружаем в кавычках. Пропали как раз новые позиции, которые добавили
+      на этой неделе, старые товары обновились нормально.
+
+  - id: t1-coach-note
+    type: coach_note
+    thread: tkt_dom_i_sad_1
+    author: eng.oleg
+    at: 2026-08-27T13:30:00Z
+    scope: customer
+    note: >-
+      The engineer's note to the agent. It carries the product-level cause
+      (K2), the customer-specific workaround and the date (K3).
+    content: |
+      Разобрался. Файл начинается с BOM (EF BB BF), поэтому заголовок первой
+      колонки читается как «[BOM]sku» и колонка sku не распознаётся.
+      Существующие товары обновились по совпадению названия, а 37 новых строк
+      импортёр молча пропустил: такие строки в отчёт не попадают. Это баг
+      импортёра, не файла. Загрузил 37 позиций вручную.
+      Для «Дом и сад»: до релиза пусть сохраняют экспорт из «СкладУчёт» как
+      «UTF-8 без BOM», это есть в диалоге экспорта. Фикс импортёра (удаление
+      BOM плюс пропущенные строки в отчёте) выходит в релизе 10 сентября.
+      Про BOM стоит добавить в статью про импорт.
+
+  - id: t1-human-reply
+    type: human_reply
+    thread: tkt_dom_i_sad_1
+    author: eng.oleg
+    at: 2026-08-27T14:05:00Z
+    content: |
+      Марина, здравствуйте. Причина на нашей стороне: файл из «СкладУчёт»
+      начинается со служебного маркера кодировки (BOM), из-за которого импортёр
+      не распознал колонку sku. Существующие товары обновились, а 37 новых
+      позиций были пропущены без ошибки в отчёте. Мы загрузили эти 37 товаров
+      вручную, проверьте, пожалуйста. До 10 сентября при экспорте из
+      «СкладУчёт» выбирайте «UTF-8 без BOM». После релиза 10 сентября это
+      будет не нужно: импортёр начнёт удалять маркер сам и показывать
+      пропущенные строки в отчёте.
+
+  - id: t1-close
+    type: close_ticket
+    thread: tkt_dom_i_sad_1
+    at: 2026-08-29T09:00:00Z
+
+  # ---- Consolidation: memory is written ---------------------------------
+  - id: consolidate-1
+    type: consolidate
+    at: 2026-08-31T09:00:00Z
+
+  # ---- Thread B: same merchant, before the release (temporal) ------------
+  - id: t2-open
+    type: customer_message
+    thread: tkt_dom_i_sad_2
+    customer: dom_i_sad
+    at: 2026-09-03T08:40:00Z
+    content: |
+      Снова «Дом и сад». В понедельник загрузили каталог, на этот раз всё на
+      месте, но коллега забыла про галочку при экспорте и переделывала файл
+      дважды. Скажите, это временно или нам теперь всегда так сохранять?
+
+  - id: t2-agent
+    type: agent_turn
+    thread: tkt_dom_i_sad_2
+    expect:
+      outcome: answer
+      tolerated: [escalate]
+      uses: [K3]
+      reply:
+        must: ["/10 сентября|10\\.09/"]
+        rubric: >-
+          Recognises this as the known issue from the earlier ticket rather
+          than a new fault: the «UTF-8 без BOM» step is temporary until the
+          importer release on 10 September, after which it is not needed.
+          Does not re-diagnose or ask the customer to describe the problem
+          again.
+
+  # ---- Thread C: same merchant, after the release (personal + undocumented)
+  - id: t3-open
+    type: customer_message
+    thread: tkt_dom_i_sad_3
+    customer: dom_i_sad
+    at: 2026-09-16T10:10:00Z
+    content: |
+      Наш интегратор автоматизирует выгрузку из «СкладУчёт» в «Прилавок» и
+      спрашивает: по какому признаку импортёр раньше пропускал наши строки, и
+      нужно ли теперь убирать BOM вручную?
+
+  - id: t3-agent
+    type: agent_turn
+    thread: tkt_dom_i_sad_3
+    note: >-
+      After valid_until: the agent must explain the cause (K1, K2) and must
+      not claim the manual "without BOM" step is still required (K3).
+    expect:
+      outcome: answer
+      uses: [K1, K2]
+      must_not_use: [K3]
+      reply:
+        must: ["/BOM/i", "/sku|артикул/i"]
+        rubric: >-
+          Explains that the BOM at the start of the file prevented the sku
+          header from being recognised, existing products were matched by
+          name and new rows without sku were skipped silently. States that
+          the 10 September importer release has shipped, so removing the BOM
+          manually is no longer required (hedging "should have shipped" is
+          partial). No escalation.
+
+  # ---- Thread D: a different merchant asks the product-level question -----
+  - id: t4-open
+    type: customer_message
+    thread: tkt_velo_dvor_1
+    customer: velo_dvor
+    at: 2026-09-16T12:00:00Z
+    content: |
+      Здравствуйте, «ВелоДвор». Загрузили прайс через импорт CSV, отчёт без
+      ошибок, но десятка новых позиций в магазине нет. Из-за чего импорт может
+      пропускать строки без ошибки?
+
+  - id: t4-agent
+    type: agent_turn
+    thread: tkt_velo_dvor_1
+    note: >-
+      Isolation check. K2 was learned on «Дом и сад»'s ticket and is not in the
+      wiki yet, so the agent has nothing to answer from: P-002 says escalate.
+      K1/K3 are «Дом и сад»'s and must never surface here.
+    expect:
+      outcome: escalate
+      tolerated: [ask]
+      must_not_use: [K1, K3]
+      reply:
+        must_not: ["/дом и сад/i", "/СкладУчёт/i"]
+        rubric: >-
+          Treats missing products after a clean import as a possible data-loss
+          case and escalates, or asks for the file or report id. Mentions no
+          other merchant.
+
+  # ---- A human accepts the documentation proposal into the wiki -----------
+  - id: wiki-update-1
+    type: wiki_update
+    page: import-eksport-csv
+    knowledge: [K2]
+    at: 2026-09-16T14:00:00Z
+    note: >-
+      The engineer accepted the proposal: K2 is appended to the CSV import
+      page. From here on K2 is answerable from the wiki by anyone.
+
+  # ---- Thread D2: the second merchant asks again --------------------------
+  - id: t5-open
+    type: customer_message
+    thread: tkt_velo_dvor_2
+    customer: velo_dvor
+    at: 2026-09-17T09:00:00Z
+    content: |
+      «ВелоДвор» снова. Пересохранили файл и всё загрузилось, но хотим
+      понять на будущее: при каких условиях импортёр пропускает строки и не
+      показывает их в отчёте?
+
+  - id: t5-agent
+    type: agent_turn
+    thread: tkt_velo_dvor_2
+    note: >-
+      Now answerable from the wiki. Still an isolation check for K1/K3.
+    expect:
+      outcome: answer
+      uses: [K2]
+      must_not_use: [K1, K3]
+      reply:
+        must: ["/BOM/i"]
+        must_not: ["/дом и сад/i", "/СкладУчёт/i"]
+        rubric: >-
+          Answers from the wiki: a BOM at the start of the file breaks
+          recognition of the sku header, and new rows without a recognised
+          sku are skipped without appearing in the report. Mentions no other
+          merchant.
+
+probes:
+  - id: recall-dom-i-sad
+    type: memory_recall
+    customer: dom_i_sad
+    query: "Как «Дом и сад» готовит CSV и почему импорт пропускал их строки?"
+    expect:
+      recalls: [K1, K2]
+
+  - id: isolation-velo-dvor
+    type: memory_recall
+    customer: velo_dvor
+    query: "BOM СкладУчёт импорт CSV пропущенные строки"
+    expect:
+      must_not_recall: [K1, K3]
+
+  - id: documentation-candidates
+    type: documentation_proposals
+    expect:
+      proposes: [K2]
+      must_not: ["/дом и сад/i", "/СкладУчёт/i"]

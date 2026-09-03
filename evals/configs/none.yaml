@@ -1,0 +1,5 @@
+# none: engine=none read=hydrate write=consolidate
+id: none
+agent:  { provider: openai, model: gpt-4o-mini, temperature: 0 }
+memory: { engine: none, read: hydrate, write: consolidate }
+judge:  { provider: anthropic, model: claude-sonnet-5 }   # a different vendor than the agent; fall back to the strongest OpenAI model if no key

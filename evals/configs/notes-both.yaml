@@ -1,0 +1,5 @@
+# notes-both: engine=notes read=both write=both
+id: notes-both
+agent:  { provider: openai, model: gpt-4o-mini, temperature: 0 }
+memory: { engine: notes, read: both, write: both }
+judge:  { provider: anthropic, model: claude-sonnet-5 }   # a different vendor than the agent; fall back to the strongest OpenAI model if no key
