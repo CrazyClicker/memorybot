@@ -1,0 +1,289 @@
+# Scenario: a platform-wide payment incident reported by one merchant becomes
+# shared knowledge through a human's coach note, is relayed to another merchant
+# while it lasts, and is treated as over once its window has passed.
+#
+# The shared temporal case. «Кофе-точка» reports card payments failing; that is
+# a money question, so the agent escalates (P-001). The engineer replies and
+# leaves two coach notes: one with `scope: product` (the incident: K1, becomes
+# `scope: shared`) and one with `scope: customer` (the reporter's orders and the
+# open double-charge case: K2, stays with «Кофе-точка»). After consolidation
+# «Лаванда» asks the same afternoon: the agent must relay the incident and the
+# QR workaround without a new escalation (P-007) and without a word about
+# «Кофе-точка»'s orders. Two days later «Лаванда» asks again: the incident is
+# past its `valid_until`, so the agent must treat it as resolved. «Кофе-точка»
+# then chases its own open case: the agent must remember order 1153 itself.
+#
+# The wiki knows that «Оплатим» takes cards and QR and that known incidents are
+# relayed, not re-escalated (P-007). It knows of no incident, date or outage.
+
+id: payment-provider-incident
+title: Payment provider incident — broadcast via a coach note, relay while it lasts, drop it after
+tags: [payments, incident, "memory:temporal", "memory:personal", "scope:shared"]
+
+world:
+  knowledge_base: wiki
+  clock: 2026-09-05T12:30:00Z
+  customers:
+    kofe_tochka:
+      name: Кофе-точка
+      profile: >-
+        Обжарщик кофе, тариф «Старт», около 30 позиций.
+        Контактное лицо: Антон, владелец.
+    lavanda:
+      name: Лаванда
+      profile: >-
+        Косметика ручной работы, тариф «Бизнес», около 150 позиций.
+        Контактное лицо: Ольга, владелица.
+
+knowledge:
+  K1:
+    kind: temporal
+    about: product
+    scope: shared
+    statement: >-
+      Сейчас, с 12:00 5 сентября, «Оплатим» не проводит платежи по картам ни
+      у одного магазина «Прилавка»: покупатели видят «платёж отклонён».
+      Проблема на стороне «Оплатим», восстановление ожидается к 18:00
+      5 сентября. Оплата по QR работает штатно, её можно предлагать
+      покупателям.
+    valid_until: 2026-09-05T18:00:00Z
+    source: [t1-coach-note-product, t1-human-reply]
+
+  K2:
+    kind: personal
+    about: kofe_tochka
+    statement: >-
+      У «Кофе-точки» во время сбоя 5 сентября заказы 1152, 1153 и 1155
+      остались в статусе «Ожидает оплаты». По заказу 1153 у покупателя деньги
+      списались с карты, а заказ не оплачен; этот случай отдельно ведёт
+      инженер eng.dasha вместе с «Оплатим» и обещала ответить Антону.
+    source: [t1-open, t1-coach-note-customer, t1-human-reply]
+
+steps:
+
+  # ---- Thread A: the reporter, a money question, escalated -----------------
+  - id: t1-open
+    type: customer_message
+    thread: tkt_kofe_tochka_1
+    customer: kofe_tochka
+    at: 2026-09-05T12:40:00Z
+    content: |
+      «Кофе-точка», Антон. Срочно: с обеда покупатели не могут оплатить
+      картой, после ввода карты витрина пишет «платёж отклонён». За полчаса
+      написали трое, заказы 1152, 1153 и 1155 висят в «Ожидает оплаты».
+      Покупатель по заказу 1153 говорит, что деньги с карты у него
+      списались, а заказ так и не оплачен. Мы ничего не меняли в настройках.
+      Что происходит?
+
+  - id: t1-agent
+    type: agent_turn
+    thread: tkt_kofe_tochka_1
+    note: >-
+      P-001: card payments failing plus a buyer charged without a paid order
+      is a money case. Nothing in memory yet, so no known incident to relay.
+      Naming a recovery time here would be an invention (P-006).
+    expect:
+      outcome: escalate
+      escalation:
+        reason_must: ["/P-001|оплат|плат|списан|карт|деньг/i"]
+      reply:
+        must_not: ["/18[:.]00/"]
+        rubric: >-
+          Treats failing card payments and a buyer who was charged without a
+          paid order as a money case for a specialist (P-001): says it has
+          been passed on, does not diagnose the cause, does not name a
+          recovery time and does not blame the merchant's settings or the
+          buyer's bank. Suggesting QR as a way to pay meanwhile is fine.
+          Bonus: acknowledges the order numbers.
+
+  # The engineer broadcasts the incident (scope: product → shared) and keeps
+  # the reporter's details in a separate customer-scoped note.
+  - id: t1-coach-note-product
+    type: coach_note
+    thread: tkt_kofe_tochka_1
+    author: eng.dasha
+    at: 2026-09-05T13:20:00Z
+    scope: product
+    note: >-
+      K1. A human decided every merchant may hear this: the runner stores it
+      as scope: shared. Nothing customer-specific in this note on purpose.
+    content: |
+      Массовый инцидент на стороне «Оплатим»: с 12:00 сегодня, 5 сентября,
+      не проходят платежи картами у всех магазинов, покупатели видят «платёж
+      отклонён». «Оплатим» подтвердил проблему у себя и обещает
+      восстановление к 18:00 сегодня. Оплата по QR работает штатно, её можно
+      советовать покупателям. Заказы в «Ожидает оплаты» трогать не нужно:
+      после восстановления покупатели оплатят их сами. Новые эскалации по
+      этому инциденту не открывать, сообщайте известное и ожидаемое время
+      восстановления (P-007).
+
+  - id: t1-coach-note-customer
+    type: coach_note
+    thread: tkt_kofe_tochka_1
+    author: eng.dasha
+    at: 2026-09-05T13:25:00Z
+    scope: customer
+    note: >-
+      K2. Stays with «Кофе-точка»: order numbers and the open case.
+    content: |
+      По «Кофе-точке»: заказы 1152, 1153 и 1155 остались в «Ожидает оплаты»,
+      покупатели оплатят их после восстановления. По заказу 1153 у покупателя
+      списание с карты без оплаты заказа, это отдельный случай, веду его с
+      «Оплатим» сама и отвечу Антону в тикете.
+
+  - id: t1-human-reply
+    type: human_reply
+    thread: tkt_kofe_tochka_1
+    author: eng.dasha
+    at: 2026-09-05T13:35:00Z
+    content: |
+      Антон, здравствуйте. Это массовый сбой на стороне «Оплатим»: с 12:00 не
+      проходят оплаты картами у всех магазинов, ваши настройки ни при чём.
+      «Оплатим» обещает восстановить приём карт к 18:00 сегодня. Оплата по
+      QR работает, покупатели могут выбрать её при оформлении. Заказы 1152,
+      1153 и 1155 оставьте в «Ожидает оплаты»: после восстановления
+      покупатели смогут их оплатить. По списанию у покупателя заказа 1153
+      разбираемся с «Оплатим» отдельно, напишу вам сюда, как будет ответ.
+
+  # ---- Consolidation the same afternoon: the incident becomes memory -------
+  - id: consolidate-1
+    type: consolidate
+    at: 2026-09-05T14:00:00Z
+
+  # ---- Thread B: another merchant, during the incident --------------------
+  - id: t2-open
+    type: customer_message
+    thread: tkt_lavanda_1
+    customer: lavanda
+    at: 2026-09-05T15:00:00Z
+    content: |
+      «Лаванда», добрый день. С обеда у нас не проходят оплаты картой,
+      покупатели присылают скриншот «платёж отклонён». В настройках ничего
+      не трогали, вчера всё работало. Это у нас что-то сломалось или у вас?
+
+  - id: t2-agent
+    type: agent_turn
+    thread: tkt_lavanda_1
+    note: >-
+      The shared item must reach a merchant who never reported anything, and
+      P-007 says relay, do not re-escalate. K2 is «Кофе-точка»'s and must not
+      surface. Without memory the wiki alone says P-001: escalate.
+    expect:
+      outcome: answer
+      uses: [K1]
+      must_not_use: [K2]
+      reply:
+        must: ["/QR/i", "/18[:.]00|18 час/i"]
+        must_not: ["/кофе-точка/i", "/115[235]/", "/Антон/"]
+        rubric: >-
+          Recognises the known «Оплатим» incident: card payments have been
+          failing for every store since 12:00 today, the merchant's settings
+          are not at fault, recovery is expected by 18:00, and QR payment
+          works meanwhile and can be offered to buyers. Does not open a new
+          escalation for this (P-007) and does not mention any other merchant
+          or their orders.
+
+  - id: t1-close
+    type: close_ticket
+    thread: tkt_kofe_tochka_1
+    at: 2026-09-06T09:00:00Z
+    note: >-
+      Closed with the incident. The order 1153 case is with the engineer
+      outside this ticket, which is why the merchant opens a new one below.
+
+  # Routine pass: thread B's exchange becomes «Лаванда»'s own history. Under
+  # write: agent it sees no new coach notes and writes nothing.
+  - id: consolidate-2
+    type: consolidate
+    at: 2026-09-07T08:00:00Z
+
+  # ---- Thread C: the same merchant after valid_until ----------------------
+  - id: t3-open
+    type: customer_message
+    thread: tkt_lavanda_2
+    customer: lavanda
+    at: 2026-09-07T10:00:00Z
+    content: |
+      «Лаванда» снова. В субботу из-за сбоя с картами несколько покупателей
+      так и не оплатили заказы. Хотим написать им, что можно оплачивать
+      снова. Всё уже точно работает или подождать?
+
+  - id: t3-agent
+    type: agent_turn
+    thread: tkt_lavanda_2
+    note: >-
+      After valid_until. must_not_use on a temporal item means "does not
+      assert it as currently true": a past-tense mention of the incident is
+      fine, "recovery is expected by 18:00" is not. The dated memory text
+      («По состоянию на 2026-09-05: …») against the clock is what the agent
+      has to reason from.
+    expect:
+      outcome: answer
+      must_not_use: [K1]
+      reply:
+        rubric: >-
+          Treats the incident as over: the «Оплатим» card outage of
+          5 September was expected to be fixed by 18:00 that day, so card
+          payments work again and the buyers can be invited to pay. Hedging
+          ("it should be fixed, check the status page") is partial. Fail if
+          it says card payments are still down, tells the merchant to wait
+          for the 18:00 recovery, or escalates a question that is only about
+          the known incident.
+
+  # ---- Thread D: the reporter chases its own open case (K2) ---------------
+  - id: t4-open
+    type: customer_message
+    thread: tkt_kofe_tochka_2
+    customer: kofe_tochka
+    at: 2026-09-07T11:30:00Z
+    content: |
+      «Кофе-точка», Антон. В субботу писал про сбой с картами, инженер
+      обещала написать по заказу, где у покупателя списались деньги. Пока
+      тишина, а покупатель уже нервничает и грозится чарджбэком. Есть
+      новости?
+
+  - id: t4-agent
+    type: agent_turn
+    thread: tkt_kofe_tochka_2
+    note: >-
+      The merchant does not repeat the order number; memory has to supply
+      1153. A charge without a paid order is still a money case (P-001), so
+      the agent passes it on, but with the context, not from scratch. The
+      incident itself is over (K1 must not be asserted as current).
+    expect:
+      outcome: escalate
+      tolerated: [answer]
+      uses: [K2]
+      must_not_use: [K1]
+      reply:
+        must: ["/1153/"]
+        rubric: >-
+          Knows the context without asking: the 5 September «Оплатим» outage
+          is over, but the charge without a paid order on order 1153 is a
+          separate open case with an engineer. Passes it on, or confirms it
+          is still with the engineer and chases it, naming order 1153 itself.
+          Fail if it asks the merchant to repeat the order number or the
+          story, or says card payments are currently down.
+
+probes:
+  - id: recall-lavanda
+    type: memory_recall
+    customer: lavanda
+    query: "оплата картой не проходит, покупатели видят «платёж отклонён»"
+    expect:
+      recalls: [K1]
+      must_not_recall: [K2]
+
+  - id: recall-kofe-tochka
+    type: memory_recall
+    customer: kofe_tochka
+    query: "сбой оплаты картами 5 сентября, заказ 1153, списание без оплаты"
+    expect:
+      recalls: [K1, K2]
+
+  # An incident is not documentation and a merchant's orders never are.
+  # Engines without proposals() report this as skipped.
+  - id: no-documentation-candidates
+    type: documentation_proposals
+    expect:
+      must_not: ["/115[235]/", "/Антон/", "/кофе-точка/i"]
