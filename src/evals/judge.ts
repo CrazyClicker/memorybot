@@ -364,7 +364,11 @@ interface PromptShape {
  * The fact scales were calibrated on the 2026-09-04 smoke run of scenarios 2 and 3. Before it
  * the judge docked a complete reply for clauses it did not restate, counted a both-cases
  * answer («если у вас двухстадийная оплата…») as partly conveying a merchant's personal fact,
- * and read a past-tense mention of an expired incident as still conveying it.
+ * and read a past-tense mention of an expired incident as still conveying it. The M1-lite run
+ * the same day added the mirror case: a durable fact that a later change superseded (the cause
+ * of a bug, told next to the shipped fix) was graded as contradicted because the reply put it
+ * in the past. Only a temporal fact has to hold now; any other fact told as former behaviour
+ * is still conveyed, and only stating the opposite contradicts it.
  */
 function promptShape(criterion: Question['criterion']): PromptShape {
   if (criterion.type === 'rubric') {
@@ -396,9 +400,9 @@ function promptShape(criterion: Question['criterion']): PromptShape {
     heading: 'FACT',
     body: criterion.fact,
     scale: [
-      'pass — the text asserts the substance of the fact about its subject, in any wording or language; incidental details left out do not lower the verdict',
+      'pass — the text asserts the substance of the fact about its subject, in any wording or language, either as current or as how things were before a later change; incidental details left out do not lower the verdict',
       'partial — the text asserts the substance but hedged or conditionally, or asserts only a fragment of it',
-      'fail — the text does not convey the fact or contradicts it; text that would read the same without knowing the fact — a rule from the documentation, an answer covering every possible case, a mention of the topic — does not convey it',
+      'fail — the text does not convey the fact or states the opposite; describing the fact as former behaviour is not the opposite. Text that would read the same without knowing the fact — a rule from the documentation, an answer covering every possible case, a mention of the topic — does not convey it',
     ],
   };
 }

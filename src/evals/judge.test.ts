@@ -28,6 +28,14 @@ const KNOWLEDGE: KnowledgeMap = {
     statement: 'По заказу 1153 деньги списаны, а заказ не оплачен.',
     source: ['coach-customer'],
   },
+  K3: {
+    kind: 'undocumented',
+    about: 'product',
+    scope: 'customer',
+    statement: 'Если файл начинается с BOM, импортёр не распознаёт колонку sku.',
+    source: ['coach-cause'],
+    documentation_candidate: true,
+  },
 };
 
 type MockGenerateResult = Awaited<ReturnType<MockLanguageModelV4['doGenerate']>>;
@@ -153,6 +161,25 @@ describe('createJudge().turn', () => {
     );
     expect(probed.checks[0]?.judgePrompt).toContain('Does the TEXT convey this FACT?');
     expect(probed.checks[0]?.judgePrompt).not.toContain('currently in force');
+  });
+
+  it('counts a superseded fact told as former behaviour, next to an expired temporal one', async () => {
+    // The M1-lite case: the cause of a bug (K3) explained in the past tense beside the shipped
+    // fix, on the same turn that must no longer assert the expired incident (K1).
+    const { judge } = mockJudge([verdict('pass'), verdict('fail')]);
+    const judged = await judge.turn(
+      { uses: ['K3'], must_not_use: ['K1'] },
+      turn('Раньше BOM ломал распознавание sku, с 10 сентября импортёр убирает его сам; сбой карт закончился.'),
+      KNOWLEDGE,
+    );
+    const [cause, incident] = judged.checks;
+    expect(cause?.judgePrompt).toContain('Does the TEXT convey this FACT?');
+    expect(cause?.judgePrompt).toContain('as how things were before a later change');
+    expect(cause?.judgePrompt).toContain('describing the fact as former behaviour is not the opposite');
+    expect(cause?.verdict).toBe('pass');
+    expect(incident?.judgePrompt).toContain('as currently in force');
+    expect(incident?.judgePrompt).not.toContain('before a later change');
+    expect(incident?.verdict).toBe('pass');
   });
 
   it('tells the judge that generic or conditional text does not convey a fact', async () => {
