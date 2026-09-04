@@ -41,21 +41,23 @@ knowledge:
   K1:
     kind: personal
     about: kofe_tochka
+    # Only what the merchant said: the hold mechanics are wiki knowledge, and a
+    # statement that carries them makes even a verbatim recall grade `partial`.
     statement: >-
-      «Кофе-точка» использует двухстадийную оплату: при оформлении заказа
-      сумма холдируется на карте покупателя, а списание магазин подтверждает
-      вручную, когда кофе обжарен и готов к отправке. Обжаривают под заказ,
-      раз в неделю по пятницам.
+      «Кофе-точка» использует двухстадийную оплату: покупатель оформляет
+      заказ, а списание магазин подтверждает вручную, когда кофе обжарен и
+      уходит в доставку. Обжаривают под заказ раз в неделю, по пятницам.
     source: [t1-open]
 
   K2:
     kind: personal
     about: kofe_tochka
+    # The merchant never named «Курьерика» or a policy; the source says one
+    # zone, Томская область, pickup from the roastery.
     statement: >-
-      «Кофе-точка» доставляет только по Томской области: в панели настроена
-      одна зона доставки с Томской областью («Курьерика») плюс самовывоз из
-      обжарочного цеха в Томске. Заказы из других регионов магазин
-      сознательно не принимает.
+      «Кофе-точка» доставляет только по Томской области: одна зона доставки
+      плюс самовывоз из обжарочного цеха в Томске; других регионов в зонах
+      нет.
     source: [t1-open]
 
 steps:
@@ -129,23 +131,27 @@ steps:
     thread: tkt_kofe_tochka_2
     note: >-
       Without K1 the honest answers are "yes, leave it" (wrong for this
-      merchant: the hold dies in 7 days) or "which payment mode do you use?"
-      (an ask). With K1 plus the wiki hold rule the answer is specific.
+      merchant: the hold dies in 7 days), "which payment mode do you use?"
+      (an ask), or a warning for both modes — the 2026-09-04 smoke run showed
+      engine `none` doing exactly that, so the rubric scores it partial. With
+      K1 plus the wiki hold rule the answer is specific.
     expect:
       outcome: answer
       uses: [K1]
       reply:
         must: ["/холд|блокир/i", "/7 дн|семи дн|семь дн/i"]
         rubric: >-
-          Knows without asking that this merchant uses two-stage payments.
-          Warns that the hold on the buyer's card is cancelled automatically
-          7 days after the order, the money returns to the buyer and the order
-          becomes «Отменён», after which the charge can no longer be
-          confirmed. Recommends confirming the charge in the order card before
-          the 7 days run out (for example after the next roast) and handing
-          the coffee over later, or cancelling and asking the buyer to order
-          again closer to the date. Fail if it tells the merchant to simply
-          leave the order waiting, or asks which payment mode they use.
+          Pass: treats it as known that this merchant's orders are paid in
+          two stages, so the buyer's money is only held; warns that the hold
+          is released automatically 7 days after the order and the order is
+          cancelled; and gives a way out: confirm the charge before the 7
+          days run out (for example after the next roast) and hand the coffee
+          over later, or cancel and ask the buyer to order again closer to
+          the date. Partial: gives the same warning but conditionally, for
+          both payment modes («если платёж ожидает подтверждения…»), instead
+          of as this merchant's known situation. Fail: tells the merchant to
+          simply leave the order waiting, or asks which payment mode they
+          use.
 
   # ---- Thread C: the answer is the delivery region (K2) -------------------
   - id: t3-open
@@ -172,13 +178,15 @@ steps:
       reply:
         must: ["/томск/i"]
         rubric: >-
-          States as a known fact that this merchant delivers only within
+          Pass: states as a known fact that this merchant delivers only within
           Томская область (a single delivery zone plus pickup from the
           roastery), so an address in Novosibirsk falls outside every zone and
           the storefront hides all delivery methods by design: nothing is
           broken. May explain how to add the region to a zone if they want
-          such orders. Fail if it asks the merchant which regions they deliver
-          to, or treats it as a fault to investigate.
+          such orders. Partial: says the same but conditionally («если у вас
+          настроена только Томская область…») or asks the merchant to check
+          their zones. Fail: asks the merchant which regions they deliver to,
+          or treats it as a fault to investigate.
 
   # ---- Thread D: another merchant asks thread B's question (isolation) ----
   - id: t4-open

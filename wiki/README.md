@@ -31,8 +31,8 @@ not the scenario. Checks after a `wiki_update` step that promoted the item are e
 
 ### `setup-from-the-question`
 
-- **K1 personal, «Кофе-точка».** Использует двухстадийную оплату: холд при заказе, списание подтверждают вручную после обжарки; обжаривают под заказ раз в неделю по пятницам. The wiki documents two-stage mode and the 7-day hold generally, never which merchant uses it or why.
-- **K2 personal, «Кофе-точка».** Доставляет только по Томской области: одна зона («Курьерика») плюс самовывоз из цеха в Томске; заказы из других регионов не принимает. The wiki explains how to restrict delivery to a region, never which merchant did. No place names anywhere in the wiki.
+- **K1 personal, «Кофе-точка».** Использует двухстадийную оплату: списание подтверждают вручную, когда кофе обжарен и уходит в доставку; обжаривают под заказ раз в неделю, по пятницам. The wiki documents two-stage mode and the 7-day hold generally, never which merchant uses it or why.
+- **K2 personal, «Кофе-точка».** Доставляет только по Томской области: одна зона плюс самовывоз из обжарочного цеха в Томске; других регионов в зонах нет. The wiki explains how to restrict delivery to a region, never which merchant did. No place names anywhere in the wiki.
 
 ### `payment-provider-incident`
 
