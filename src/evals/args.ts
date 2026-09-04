@@ -41,6 +41,10 @@ export const COMMANDS: Readonly<Record<CommandName, CommandSpec>> = {
       repeat: { type: 'string', help: 'Repeats per scenario-config pair (default 1).' },
       yes: { type: 'boolean', short: 'y', help: 'Skip the cost confirmation prompt.' },
       'run-id': { type: 'string', help: 'Name of the results directory (default: a timestamp).' },
+      'allow-cached-repeats': {
+        type: 'boolean',
+        help: 'Accept --repeat > 1 with LLM_CACHE=1, knowing every repeat replays the first sample (check development only).',
+      },
     },
     task: 'T2.5',
   },
@@ -64,6 +68,24 @@ export const COMMANDS: Readonly<Record<CommandName, CommandSpec>> = {
 };
 
 export class CliError extends Error {}
+
+/**
+ * `--repeat` exists to sample model variance (ROADMAP §8: the gpt-5.6 models take no
+ * temperature). The disk cache replays identical calls, so a cached repeat is the first sample
+ * graded again and a report would show `✓ 3/3` for one reply. Refuse unless the caller opts in.
+ */
+export function cachedRepeatsProblem(input: {
+  readonly cached: boolean;
+  readonly repeat: number;
+  readonly allowed: boolean;
+}): string | undefined {
+  if (!input.cached || input.repeat <= 1 || input.allowed) return undefined;
+  return (
+    `LLM_CACHE=1 replays identical calls, so --repeat ${input.repeat} would grade one sample ` +
+    `${input.repeat} times. Set LLM_CACHE=0 for real repeats, or pass --allow-cached-repeats ` +
+    'to accept replays while developing checks.'
+  );
+}
 
 export type ParsedCli =
   | { kind: 'help'; text: string }

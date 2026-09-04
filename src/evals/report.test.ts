@@ -400,6 +400,66 @@ describe('renderReport', () => {
     expect(markdown).not.toContain('## Runs that did not finish');
   });
 
+  it('flags result files produced with the LLM cache on', () => {
+    const base = {
+      scenario: 'story',
+      startedAt: START,
+      steps: [],
+      consolidations: [],
+      probes: [],
+      score: scoreOf([]),
+      costUsd: 0,
+    };
+    const cachedRun = buildReport({
+      runId: 'run-1',
+      results: [
+        { ...base, config: 'none', repeat: 1, cached: true },
+        { ...base, config: 'naive', repeat: 1 },
+      ],
+    });
+    expect(cachedRun.cachedResults).toBe(1);
+    expect(renderReport(cachedRun)).toContain('**Cached.** 1 result file of 2 ran with the LLM disk cache on');
+
+    const coldRun = buildReport({ runId: 'run-2', results: [{ ...base, config: 'none', repeat: 1 }] });
+    expect(coldRun.cachedResults).toBe(0);
+    expect(renderReport(coldRun)).not.toContain('Cached.');
+  });
+
+  it('lists consolidations the engine failed, without treating the run as aborted', () => {
+    const model = buildReport({
+      runId: 'run-1',
+      results: [{
+        scenario: 'story',
+        config: 'notes',
+        repeat: 2,
+        startedAt: START,
+        steps: [],
+        consolidations: [{
+          id: 'consolidate-1',
+          at: START,
+          wrote: [],
+          errors: [{ thread: 'tkt_alpha_1', error: 'AI_NoObjectGeneratedError: response did not match schema' }],
+        }],
+        probes: [],
+        score: scoreOf([]),
+        costUsd: 0,
+      }],
+    });
+    expect(model.errors).toEqual([]);
+    expect(model.consolidationFailures).toEqual([{
+      scenario: 'story',
+      config: 'notes',
+      repeat: 2,
+      step: 'consolidate-1',
+      thread: 'tkt_alpha_1',
+      error: 'AI_NoObjectGeneratedError: response did not match schema',
+    }]);
+    const rendered = renderReport(model);
+    expect(rendered).toContain('## Consolidations that failed');
+    expect(rendered).toContain('`story.notes.2` · `consolidate-1` · `tkt_alpha_1` — AI_NoObjectGeneratedError');
+    expect(rendered).not.toContain('Runs that did not finish');
+  });
+
   it('names the judge that actually ran when it is not the configured one', () => {
     const [naive] = smokeResults();
     const model = report(

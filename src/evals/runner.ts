@@ -1,9 +1,12 @@
+import type { LanguageModel } from 'ai';
+
 import { runTurn, type RunTurnOptions, type TurnInput, type TurnResult } from '../agent/index.ts';
 import {
   canRecall,
   cloneMemoryItem,
   createNaiveMemoryEngine,
   createNoneMemoryEngine,
+  createNotesMemoryEngine,
   dateStatement,
   type MemoryEngine,
   type MemoryItem,
@@ -16,7 +19,7 @@ import { createSkipJudge, type Judge } from './judge.ts';
 import type {
   CheckResult,
   Config,
-  MemoryEngineId,
+  ConsolidationError,
   ProbeResult,
   RunResult,
   Scenario,
@@ -43,6 +46,8 @@ export interface RunScenarioOptions {
   readonly runAgent?: RunAgent;
   /** Wall clock used only for result metadata, never for scenario decisions. */
   readonly wallClock?: () => Date;
+  /** Recorded in the result: a run made with the LLM disk cache on replays identical calls. */
+  readonly cached?: boolean;
 }
 
 export type RepeatScenarioOptions = Omit<RunScenarioOptions, 'repeat'>;
@@ -57,17 +62,26 @@ interface RunState {
   costUsd: number;
 }
 
-/** Engines available before the external and structured engines land in T3. */
-export function createMemoryEngine(id: MemoryEngineId): MemoryEngine {
-  switch (id) {
+export interface CreateMemoryEngineOptions {
+  /** Direct model injection keeps factory-level notes tests offline. */
+  readonly model?: LanguageModel;
+}
+
+/** Build an engine from the complete config because structured extraction uses its agent model. */
+export function createMemoryEngine(
+  config: Config,
+  options: CreateMemoryEngineOptions = {},
+): MemoryEngine {
+  switch (config.memory.engine) {
     case 'none':
       return createNoneMemoryEngine();
     case 'naive':
       return createNaiveMemoryEngine();
     case 'notes':
+      return createNotesMemoryEngine({ modelSpec: config.agent, model: options.model });
     case 'mem0':
     case 'xmemory':
-      throw new Error(`Memory engine "${id}" is not implemented yet`);
+      throw new Error(`Memory engine "${config.memory.engine}" is not implemented yet`);
   }
 }
 
@@ -114,10 +128,10 @@ export async function runScenario(
     }
     await executeProbes(scenario, options.engine, state, judge);
   } catch (error) {
-    return result(state, scenario, config, repeat, startedAt, wallTime(wallClock), judge, errorMessage(error));
+    return result(state, scenario, config, repeat, startedAt, wallTime(wallClock), judge, options.cached, errorMessage(error));
   }
 
-  return result(state, scenario, config, repeat, startedAt, wallTime(wallClock), judge);
+  return result(state, scenario, config, repeat, startedAt, wallTime(wallClock), judge, options.cached);
 }
 
 /** Sequential repeats deliberately reuse the adapter: `reset()` must prove each run is fresh. */
@@ -254,6 +268,8 @@ async function executeStep(
 
     case 'consolidate': {
       const wrote: MemoryItem[] = [];
+      const errors: ConsolidationError[] = [];
+      const costBefore = engine.usage?.().costUsd;
       for (const thread of state.threads.values()) {
         const previousCount = state.consolidatedEventCounts.get(thread.id) ?? 0;
         if (thread.events.length === previousCount) continue;
@@ -261,11 +277,29 @@ async function executeStep(
         const transcript = config.memory.write === 'agent'
           ? coachNotesSince(thread, previousCount)
           : cloneThread(thread);
-        const items = await engine.consolidate(transcript, state.now);
-        wrote.push(...items.map(cloneMemoryItem));
-        state.consolidatedEventCounts.set(thread.id, thread.events.length);
+        try {
+          const items = await engine.consolidate(transcript, state.now);
+          wrote.push(...items.map(cloneMemoryItem));
+          state.consolidatedEventCounts.set(thread.id, thread.events.length);
+        } catch (error) {
+          // The engine wrote nothing for this thread: a memory gap the later checks measure,
+          // not a reason to abandon the paid turns around it. The thread stays pending, so the
+          // next consolidate step offers it again.
+          errors.push({ thread: thread.id, error: errorMessage(error) });
+        }
       }
-      state.consolidations.push({ id: step.id, at: state.now, wrote });
+      const costAfter = engine.usage?.().costUsd;
+      const engineCost = costBefore === undefined || costAfter === undefined
+        ? undefined
+        : Math.max(0, costAfter - costBefore);
+      state.consolidations.push({
+        id: step.id,
+        at: state.now,
+        wrote,
+        ...(engineCost === undefined ? {} : { costUsd: engineCost }),
+        ...(errors.length === 0 ? {} : { errors }),
+      });
+      state.costUsd += engineCost ?? 0;
       return;
     }
   }
@@ -380,6 +414,7 @@ function result(
   startedAt: string,
   finishedAt: string,
   judge: Judge,
+  cached?: boolean,
   error?: string,
 ): RunResult {
   return {
@@ -394,6 +429,7 @@ function result(
     probes: state.probes,
     score: scoreOf(allChecks(state)),
     costUsd: state.costUsd,
+    ...(cached === undefined ? {} : { cached }),
     ...(error === undefined ? {} : { error }),
   };
 }

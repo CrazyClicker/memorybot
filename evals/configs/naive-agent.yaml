@@ -1,0 +1,4 @@
+id: naive-agent
+agent: { provider: openai, model: gpt-5.6-terra }
+memory: { engine: naive, read: hydrate, write: agent }
+judge: { provider: anthropic, model: claude-sonnet-5 }

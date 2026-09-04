@@ -5,7 +5,8 @@ import 'dotenv/config';
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 
-import { CliError, type CommandName, COMMANDS, parseCli } from './args.ts';
+import { cacheDirFrom } from '../llm/index.ts';
+import { cachedRepeatsProblem, CliError, type CommandName, COMMANDS, parseCli } from './args.ts';
 import { createJudge, type Judge, resolveJudgeSpec } from './judge.ts';
 import { CONFIGS_DIR, listYamlFiles, type LoadedFile, SCENARIOS_DIR, validateFiles } from './load.ts';
 import type { MemoryEngine } from '../memory/index.ts';
@@ -187,11 +188,19 @@ const run: Command = async (values) => {
 
   const agentCalls = agentCallCount(scenarios, configs, selection.repeat);
   const judgeCalls = judgeCallCount(scenarios, configs, selection.repeat);
+  const cached = cacheDirFrom() !== undefined;
   process.stdout.write(
     `\nPlan: ${scenarios.length} scenario(s) × ${configs.length} config(s) × ` +
       `${selection.repeat} repeat(s), ${agentCalls} agent turn(s) and up to ` +
-      `${judgeCalls} judge call(s). A turn is a tool loop: several model calls.\n`,
+      `${judgeCalls} judge call(s). A turn is a tool loop: several model calls. ` +
+      `LLM cache: ${cached ? 'on (identical calls replay)' : 'off'}.\n`,
   );
+  const cacheProblem = cachedRepeatsProblem({
+    cached,
+    repeat: selection.repeat,
+    allowed: values['allow-cached-repeats'] === true,
+  });
+  if (cacheProblem !== undefined) throw new CliError(cacheProblem);
   if (selection.all && values['yes'] !== true) {
     process.stderr.write('Full-matrix runs require --yes after reviewing the call estimate.\n');
     process.exitCode = EXIT_USAGE;
@@ -205,7 +214,7 @@ const run: Command = async (values) => {
     if (warning !== undefined) process.stderr.write(`Config "${config.id}": ${warning}\n`);
     try {
       runtimes.set(config.id, {
-        engine: createMemoryEngine(config.memory.engine),
+        engine: createMemoryEngine(config),
         judge: createJudge(spec),
       });
     } catch (error) {
@@ -223,7 +232,7 @@ const run: Command = async (values) => {
     for (const config of configs) {
       const runtime = runtimes.get(config.id);
       if (runtime === undefined) throw new Error(`No runtime built for config "${config.id}"`);
-      const results = await runScenarioRepeats(scenario, config, selection.repeat, runtime);
+      const results = await runScenarioRepeats(scenario, config, selection.repeat, { ...runtime, cached });
       for (const result of results) {
         const parsed = RunResultSchema.parse(result);
         const path = join(outputDir, `${scenario.id}.${config.id}.${result.repeat}.json`);

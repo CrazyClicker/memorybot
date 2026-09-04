@@ -1,4 +1,5 @@
 import type { MemoryItem } from '../evals/schema.ts';
+import type { TokenUsage } from '../llm/index.ts';
 
 /** Keep one canonical knowledge/memory vocabulary: the eval schema owns these types. */
 export type { Kind, MemoryItem } from '../evals/schema.ts';
@@ -40,6 +41,14 @@ export interface MemoryEngine {
   consolidate(thread: ThreadTranscript, now: string): Promise<MemoryItem[]>;
   /** Engines that cannot serve documentation proposals leave this undefined. */
   proposals?(): Promise<MemoryItem[]>;
+  /** Cumulative observable engine-side LLM use since reset; hosted adapters may omit this. */
+  usage?(): MemoryEngineUsage;
+}
+
+export interface MemoryEngineUsage {
+  readonly usage: TokenUsage;
+  /** Absent when the extraction model has no catalogue price. */
+  readonly costUsd?: number;
 }
 
 /** Runtime check used by engine implementations and later by the runner. */
@@ -47,10 +56,21 @@ export function canRecall(item: MemoryItem, customer: string): boolean {
   return item.scope === 'shared' || item.about === customer || item.learnedFrom === customer;
 }
 
-/** Prefix a write with the scenario date without double-prefixing an already dated statement. */
+/** A writer's own date prefix, with or without the colon the canonical form uses. */
+const WRITER_DATE_PREFIX = /^По состоянию на (\d{4}-\d{2}-\d{2})(?:T[0-9:.Z+-]*)?:?\s*/u;
+
+/**
+ * Prefix a write with the scenario date. A statement the writer already dated keeps its own
+ * date and is normalised to the canonical `По состоянию на YYYY-MM-DD: …` form: the agent's
+ * `remember` tool sometimes writes the prefix itself, and without the colon it used to be
+ * dated twice.
+ */
 export function dateStatement(statement: string, now: string): string {
   const trimmed = statement.trim();
-  if (/^По состоянию на \d{4}-\d{2}-\d{2}:/.test(trimmed)) return trimmed;
+  const dated = WRITER_DATE_PREFIX.exec(trimmed);
+  if (dated?.[1] !== undefined) {
+    return `По состоянию на ${dated[1]}: ${trimmed.slice(dated[0].length)}`;
+  }
   return `По состоянию на ${scenarioDate(now)}: ${trimmed}`;
 }
 

@@ -1,5 +1,3 @@
-import { Buffer } from 'node:buffer';
-
 import {
   canRecall,
   cloneMemoryItem,
@@ -9,6 +7,10 @@ import {
   type ThreadEvent,
   type ThreadTranscript,
 } from './engine.ts';
+import { estimateTokens } from './text.ts';
+
+// Compatibility export; the implementation is shared with structured engines in text.ts.
+export { estimateTokens } from './text.ts';
 
 export const DEFAULT_NAIVE_RECALL_TOKENS = 4_000;
 
@@ -20,15 +22,6 @@ export interface NaiveMemoryOptions {
 
 interface LogEntry {
   readonly item: MemoryItem;
-}
-
-/**
- * Dependency-free approximation: about four UTF-8 bytes per token. This intentionally counts
- * Cyrillic more conservatively than a character/4 heuristic. The budget remains a hard cap
- * according to the same counter used while selecting results.
- */
-export function estimateTokens(text: string): number {
-  return text === '' ? 0 : Math.ceil(Buffer.byteLength(text, 'utf8') / 4);
 }
 
 /** Whole transcripts in, newest matching log entries out. No extraction and no query ranking. */

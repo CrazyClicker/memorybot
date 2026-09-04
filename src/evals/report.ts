@@ -19,6 +19,7 @@ import { readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
 import { modelKey } from '../llm/index.ts';
+import { factTokens } from '../memory/text.ts';
 import {
   type Config,
   type KnowledgeItem,
@@ -150,36 +151,8 @@ export function cellGlyph(cell: Cell): Glyph {
 
 // ---- Attribution: which write path learned a fact -------------------------------------------
 
-/** Words too common in Russian support prose to carry a fact; short tokens are dropped anyway. */
-const STOPWORDS = new Set([
-  'который', 'которая', 'которые', 'этого', 'этот', 'эта', 'это', 'если', 'чтобы', 'также',
-  'может', 'можно', 'нужно', 'после', 'перед', 'через', 'когда', 'пока', 'ещё', 'еще',
-  'всё', 'все', 'весь', 'быть', 'была', 'было', 'были', 'есть',
-  'состоянию', 'состояние', 'клиент', 'клиента', 'магазин', 'магазина',
-  'that', 'this', 'with', 'from', 'have', 'been', 'they', 'their', 'about', 'because',
-]);
-
-const DATE_PREFIX = /^По состоянию на \d{4}-\d{2}-\d{2}:\s*/u;
-
-/**
- * Crude Russian stemming: compare the first five characters, so «товары» and «товаров» agree
- * without a morphology library. Tokens with a digit (order numbers, dates, «000123») are kept
- * whole — they are the most discriminating part of a support fact.
- */
-function stem(token: string): string {
-  return /\d/.test(token) ? token : token.slice(0, 5);
-}
-
-/** Content words of a statement, stemmed and deduplicated. The write date prefix is not content. */
-export function factTokens(text: string): Set<string> {
-  const tokens = text
-    .replace(DATE_PREFIX, '')
-    .toLowerCase()
-    .replace(/ё/gu, 'е')
-    .split(/[^\p{L}\p{N}]+/u)
-    .filter((token) => token !== '' && !STOPWORDS.has(token) && (token.length >= 4 || /\d/.test(token)));
-  return new Set(tokens.map(stem));
-}
+/** Kept as a report export for existing callers; implementation is shared with memory engines. */
+export { factTokens } from '../memory/text.ts';
 
 /** A write must repeat this share of the fact's content words to be credited with it. */
 export const CARRIES_FACT_THRESHOLD = 0.3;
@@ -275,16 +248,29 @@ export interface RunError {
   readonly error: string;
 }
 
+/** One thread an engine failed to consolidate; the run went on without that memory. */
+export interface ConsolidationFailure {
+  readonly scenario: string;
+  readonly config: string;
+  readonly repeat: number;
+  readonly step: string;
+  readonly thread: string;
+  readonly error: string;
+}
+
 export interface ReportModel {
   readonly runId: string;
   readonly generatedAt: string;
   readonly resultCount: number;
   /** The largest number of repeats any scenario × config pair has; 1 hides the fractions. */
   readonly repeats: number;
+  /** Result files produced with the LLM disk cache on; their repeats are replays, not samples. */
+  readonly cachedResults: number;
   readonly configs: readonly ConfigSummary[];
   readonly scenarios: readonly ScenarioReport[];
   readonly findings: readonly Finding[];
   readonly errors: readonly RunError[];
+  readonly consolidationFailures: readonly ConsolidationFailure[];
   readonly unreadable: readonly UnreadableResult[];
 }
 
@@ -330,6 +316,7 @@ export function buildReport(inputs: ReportInputs): ReportModel {
     generatedAt: inputs.generatedAt ?? new Date().toISOString(),
     resultCount: results.length,
     repeats: Math.max(1, ...results.map((result) => result.repeat)),
+    cachedResults: results.filter((result) => result.cached === true).length,
     configs: configIds.map((id) =>
       summarizeConfig(id, configById.get(id), results.filter((result) => result.config === id)),
     ),
@@ -343,6 +330,18 @@ export function buildReport(inputs: ReportInputs): ReportModel {
         repeat: result.repeat,
         error: result.error ?? '',
       })),
+    consolidationFailures: results.flatMap((result) =>
+      result.consolidations.flatMap((consolidation) =>
+        (consolidation.errors ?? []).map((failure) => ({
+          scenario: result.scenario,
+          config: result.config,
+          repeat: result.repeat,
+          step: consolidation.id,
+          thread: failure.thread,
+          error: failure.error,
+        })),
+      ),
+    ),
     unreadable: inputs.unreadable ?? [],
   };
 }
@@ -607,6 +606,22 @@ export function renderReport(model: ReportModel): string {
     }
   }
 
+  if (model.consolidationFailures.length > 0) {
+    out.push(
+      '',
+      '## Consolidations that failed',
+      '',
+      'The engine wrote nothing for that thread at that step; the checks after it measure the gap.',
+      '',
+    );
+    for (const failure of model.consolidationFailures) {
+      out.push(
+        `- \`${failure.scenario}.${failure.config}.${failure.repeat}\` · \`${failure.step}\` · ` +
+          `\`${failure.thread}\` — ${inline(failure.error)}`,
+      );
+    }
+  }
+
   if (model.unreadable.length > 0) {
     out.push('', '## Files skipped', '');
     for (const file of model.unreadable) out.push(`- \`${file.path}\` — ${inline(file.problem)}`);
@@ -616,10 +631,16 @@ export function renderReport(model: ReportModel): string {
 }
 
 function intro(model: ReportModel): string {
-  return (
+  const generated =
     `Generated ${model.generatedAt} from ${plural(model.resultCount, 'result file')}: ` +
     `${plural(model.scenarios.length, 'scenario')} × ${plural(model.configs.length, 'config')} × ` +
-    `${plural(model.repeats, 'repeat')}.`
+    `${plural(model.repeats, 'repeat')}.`;
+  if (model.cachedResults === 0) return generated;
+  return (
+    `${generated}\n\n` +
+    `**Cached.** ${plural(model.cachedResults, 'result file')} of ${model.resultCount} ran with the ` +
+    'LLM disk cache on: identical calls replay the recorded response, so repeats of a cached run ' +
+    'are the same sample graded again, and its latencies are replay times, not model latencies.'
   );
 }
 

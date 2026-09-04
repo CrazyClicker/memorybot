@@ -106,6 +106,13 @@ class FailingWriteEngine extends RecordingEngine {
   }
 }
 
+class FailingConsolidateEngine extends RecordingEngine {
+  override async consolidate(thread: ThreadTranscript, now: string): Promise<MemoryItem[]> {
+    await super.consolidate(thread, now);
+    throw new Error('extraction failed');
+  }
+}
+
 function cloneThread(thread: ThreadTranscript): ThreadTranscript {
   return {
     id: thread.id,
@@ -470,5 +477,23 @@ describe('runScenario', () => {
     expect(result.steps[0]?.memoryWrites).toHaveLength(1);
     expect(result.costUsd).toBe(0.001);
     expect(result.error).toBe('Error: write failed');
+  });
+
+  it('records a consolidation the engine failed and offers the thread again next time', async () => {
+    const scenario = fullScenario();
+    scenario.steps = scenario.steps.filter(
+      (step, index) => index === 0 || step.id === 'consolidate-one' || step.id === 'consolidate-two',
+    );
+    scenario.probes = undefined;
+    const engine = new FailingConsolidateEngine();
+    const result = await runScenario(scenario, config(), { engine, wiki: wiki() });
+
+    expect(result.error).toBeUndefined();
+    expect(result.consolidations.map(({ id, wrote, errors }) => [id, wrote.length, errors])).toEqual([
+      ['consolidate-one', 0, [{ thread: 'alpha-thread', error: 'Error: extraction failed' }]],
+      ['consolidate-two', 0, [{ thread: 'alpha-thread', error: 'Error: extraction failed' }]],
+    ]);
+    expect(engine.consolidations).toHaveLength(2);
+    expect(RunResultSchema.safeParse(result).success).toBe(true);
   });
 });

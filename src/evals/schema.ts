@@ -393,10 +393,20 @@ export const StepResultSchema = z.strictObject({
 });
 export type StepResult = z.infer<typeof StepResultSchema>;
 
+/** The engine threw for one thread: it wrote nothing for it, and the run went on (T3.1). */
+export const ConsolidationErrorSchema = z.strictObject({
+  thread: z.string().min(1),
+  error: z.string().min(1),
+});
+export type ConsolidationError = z.infer<typeof ConsolidationErrorSchema>;
+
 export const ConsolidationResultSchema = z.strictObject({
   id: IdSchema,
   at: TimestampSchema,
   wrote: z.array(MemoryItemSchema),
+  /** Observable engine-side extraction cost for this boundary. */
+  costUsd: z.number().min(0).optional(),
+  errors: z.array(ConsolidationErrorSchema).optional(),
 });
 export type ConsolidationResult = z.infer<typeof ConsolidationResultSchema>;
 
@@ -431,8 +441,10 @@ export const RunResultSchema = z.strictObject({
   consolidations: z.array(ConsolidationResultSchema),
   probes: z.array(ProbeResultSchema),
   score: ScoreSchema,
-  /** Agent and judge calls only; what a hosted engine spends inside its own API is not visible here. */
+  /** Agent, judge and observable local-engine calls; hosted-engine internal spend is not visible. */
   costUsd: z.number().min(0),
+  /** True when the LLM disk cache was on: identical calls replayed, so repeats are not samples. */
+  cached: z.boolean().optional(),
   /** Set when the run stopped early; the steps before the failure are still recorded. */
   error: z.string().optional(),
 });
