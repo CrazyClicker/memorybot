@@ -11,6 +11,7 @@ import { z } from 'zod';
 
 import {
   DateOrTimestampSchema,
+  expiryMs,
   KindSchema,
   OutcomeSchema,
   type Outcome,
@@ -215,7 +216,7 @@ function createAgentTools(
             ...cloneMemoryItem(item),
             status: item.validUntil === undefined
               ? 'not_applicable'
-              : Date.parse(item.validUntil) < nowMs
+              : expiryMs(item.validUntil) < nowMs
                 ? 'expired'
                 : 'active',
           }));

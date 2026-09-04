@@ -52,6 +52,20 @@ export function clockMs(value: string): number {
   return Date.parse(value);
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The instant a `valid_until` stops applying. A bare date covers the whole day it names
+ * («до 10 сентября» includes the 10th), so it resolves to that day's last millisecond rather
+ * than its midnight: an incident whose expiry an extractor wrote as `2026-09-05` must not read
+ * as expired at 15:00 on the 5th. Timestamps are exact.
+ */
+export function expiryMs(value: string): number {
+  const trimmed = value.trim();
+  const ms = Date.parse(trimmed);
+  return /^\d{4}-\d{2}-\d{2}$/.test(trimmed) ? ms + DAY_MS - 1 : ms;
+}
+
 // ---- Check patterns ----------------------------------------------------------------------
 
 /**

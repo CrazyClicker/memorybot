@@ -10,6 +10,7 @@ import type { z } from 'zod';
 import { modelKey, priceFor } from '../llm/index.ts';
 import {
   clockMs,
+  expiryMs,
   type Config,
   ConfigSchema,
   type KnowledgeItem,
@@ -352,7 +353,7 @@ export function validateScenario(scenario: Scenario, ctx: ValidationContext = {}
     for (const id of expect.must_not_use ?? []) {
       referenced.add(id);
       const fact = facts.get(id);
-      if (fact?.item.kind === 'temporal' && fact.item.valid_until !== undefined && now > clockMs(fact.item.valid_until)) {
+      if (fact?.item.kind === 'temporal' && fact.item.valid_until !== undefined && now > expiryMs(fact.item.valid_until)) {
         droppedAfterExpiry.add(id);
       }
     }

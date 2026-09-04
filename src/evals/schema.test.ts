@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { ZERO_USAGE } from '../llm/index.ts';
 import {
   clockMs,
+  expiryMs,
   compilePattern,
   ConfigSchema,
   MemoryItemSchema,
@@ -222,5 +223,20 @@ describe('clockMs', () => {
     expect(clockMs('2026-09-10')).toBe(Date.UTC(2026, 8, 10));
     expect(clockMs('2026-09-05T18:00:00Z')).toBe(Date.UTC(2026, 8, 5, 18));
     expect(clockMs('2026-09-05T18:00:00+03:00')).toBe(Date.UTC(2026, 8, 5, 15));
+  });
+});
+
+describe('expiryMs', () => {
+  // A date-only expiry is a day, not an instant: an extractor that wrote `2026-09-05` for an
+  // incident recovering at 18:00 that day must not make the note read expired at 15:00.
+  it('covers the whole day a bare date names', () => {
+    expect(expiryMs('2026-09-05')).toBe(Date.UTC(2026, 8, 5, 23, 59, 59, 999));
+    expect(expiryMs('2026-09-05')).toBeGreaterThan(Date.UTC(2026, 8, 5, 15));
+    expect(expiryMs('2026-09-05')).toBeLessThan(Date.UTC(2026, 8, 6));
+  });
+
+  it('takes a timestamp as the exact instant', () => {
+    expect(expiryMs('2026-09-05T18:00:00Z')).toBe(Date.UTC(2026, 8, 5, 18));
+    expect(expiryMs('2026-09-05T18:00:00+03:00')).toBe(Date.UTC(2026, 8, 5, 15));
   });
 });
