@@ -161,7 +161,9 @@ means the reply asserts the *substance* of the statement about its subject; deta
 do not lower the verdict, because a K statement is written out in full for the record and a
 reply is not. `partial` is a hedged or conditional assertion, or a fragment. `fail` is anything
 that would read the same without knowing the fact: a rule from the documentation, an answer
-covering every case, a mention of the topic. On an `agent_turn` a `temporal` item is judged as
+covering every case, a mention of the topic. A non-temporal fact told as former behaviour that
+a later change replaced (the cause of a bug, next to the shipped fix) still counts as conveyed;
+only stating the opposite contradicts it. On an `agent_turn` a `temporal` item is judged as
 "asserted as currently in force", so a past-tense mention is not a use — which is what
 `must_not_use` after `valid_until` relies on. Probes ask only whether memory holds the
 statement, whatever its date.
@@ -211,6 +213,11 @@ Results go to `evals/results/<run-id>/<scenario>.<config>.<repeat>.json` (git-ig
 }
 ```
 
+`cached: true` marks a result produced with the LLM disk cache on (`LLM_CACHE=1`): identical
+calls replay the recorded response, so such repeats are one sample graded again and the report
+says so. `pnpm eval run` refuses `--repeat` above 1 with the cache on unless
+`--allow-cached-repeats` is passed.
+
 Scores are counts, not a single number: a scenario is a story, and which step failed is the
 finding. `pnpm eval report [--run <run-id>] [--out <path>]` aggregates a run directory into
 `REPORT.md`: one table per scenario (rows = checks, columns = configs, cells = pass rate over
@@ -242,8 +249,12 @@ Every statement written to memory is prefixed with the scenario date («По с�
 the text.
 
 The engine adapter (`src/memory/engine.ts`): `reset()`, `recall(customer, query, now)`,
-`write(items, now)`, `consolidate(thread, now)`, optional `proposals()`. Recall returns items
-with `scope == shared`, `about == customer` or `learnedFrom == customer`.
+`write(items, now)`, `consolidate(thread, now)`, optional `proposals()`, optional `usage()` for
+an engine whose own LLM calls are visible (the `notes` extractor), charged to the run's cost at
+every `consolidate` step. Recall returns items with `scope == shared`, `about == customer` or
+`learnedFrom == customer`. An engine that throws while consolidating one thread does not end
+the run: the runner records the error on that `consolidate` result, the engine wrote nothing
+for the thread, and the report lists it under "Consolidations that failed".
 
 **Wiki leak lint** (`pnpm eval lint-wiki`): every scenario is run with `engine: none`; every
 `uses:` check must fail, except checks that follow a `wiki_update` promoting that item. A
