@@ -248,6 +248,14 @@ Every statement written to memory is prefixed with the scenario date («По с�
 2026-08-27: …»), because hosted engines stamp wall-clock time and the date must survive in
 the text.
 
+The `mem0` adapter runs `mem0ai/oss` in-process with its in-memory vector store. Its LLM and
+embedder use `OPENAI_API_KEY`; its extractor uses the same OpenAI model as the configured
+support agent so engine comparisons do not also compare extraction models. It does not use
+Mem0 Cloud or require `MEM0_API_KEY`. Mem0's internal timestamps remain wall-clock timestamps,
+while items exposed through the engine interface carry the scenario clock. Customer memories
+use the customer id as `userId`, and product-scoped coach notes use the reserved `_shared` user.
+Mem0's operational telemetry is disabled by default; set `MEM0_TELEMETRY=true` to opt in.
+
 The engine adapter (`src/memory/engine.ts`): `reset()`, `recall(customer, query, now)`,
 `write(items, now)`, `consolidate(thread, now)`, optional `proposals()`, optional `usage()` for
 an engine whose own LLM calls are visible (the `notes` extractor), charged to the run's cost at

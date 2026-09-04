@@ -4,12 +4,14 @@ import { runTurn, type RunTurnOptions, type TurnInput, type TurnResult } from '.
 import {
   canRecall,
   cloneMemoryItem,
+  createMem0MemoryEngine,
   createNaiveMemoryEngine,
   createNoneMemoryEngine,
   createNotesMemoryEngine,
   dateStatement,
   type MemoryEngine,
   type MemoryItem,
+  type Mem0Client,
   type ThreadEvent,
   type ThreadTranscript,
 } from '../memory/index.ts';
@@ -65,6 +67,8 @@ interface RunState {
 export interface CreateMemoryEngineOptions {
   /** Direct model injection keeps factory-level notes tests offline. */
   readonly model?: LanguageModel;
+  /** Direct client injection keeps factory-level mem0 tests offline. */
+  readonly mem0Client?: Mem0Client;
 }
 
 /** Build an engine from the complete config because structured extraction uses its agent model. */
@@ -79,7 +83,15 @@ export function createMemoryEngine(
       return createNaiveMemoryEngine();
     case 'notes':
       return createNotesMemoryEngine({ modelSpec: config.agent, model: options.model });
-    case 'mem0':
+    case 'mem0': {
+      if (config.agent.provider !== 'openai') {
+        throw new Error('mem0 comparison requires an OpenAI agent model for like-for-like extraction');
+      }
+      return createMem0MemoryEngine({
+        client: options.mem0Client,
+        llmModel: config.agent.model,
+      });
+    }
     case 'xmemory':
       throw new Error(`Memory engine "${config.memory.engine}" is not implemented yet`);
   }

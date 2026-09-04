@@ -310,6 +310,24 @@ describe('buildReport', () => {
     expect(model.scenarios[0]?.knowledge.map((row) => row.learnedVia)).toEqual([[], []]);
   });
 
+  it('records the Mem0 wall-clock and extraction caveat', () => {
+    const mem0 = config('mem0', {
+      memory: { engine: 'mem0', read: 'hydrate', write: 'consolidate' },
+    });
+    const model = buildReport({
+      runId: 'mem0-run',
+      generatedAt: START,
+      scenarios: [scenario()],
+      configs: [mem0],
+      results: [run('mem0', 1)],
+      unreadable: [],
+    });
+
+    expect(renderReport(model)).toContain(
+      '**Mem0 caveat.** OSS Mem0 uses wall-clock timestamps internally',
+    );
+  });
+
   it('aggregates every positive knowledge check into the K column', () => {
     const model = report(smokeResults());
     // `uses:K2` failed and `recalls:K2` was partial for naive: mixed, not a pass.

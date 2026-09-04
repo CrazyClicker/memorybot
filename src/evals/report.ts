@@ -565,6 +565,14 @@ export function renderReport(model: ReportModel): string {
     `least ${Math.round(CARRIES_FACT_THRESHOLD * 100)}% of that item's content words. The match is lexical and says only that the`,
     'path *wrote* something like the fact; whether the fact reached the merchant is the graded',
     '`uses:`/`recalls:` columns beside it.',
+    ...(model.configs.some((config) => config.memory?.engine === 'mem0')
+      ? [
+          '',
+          '**Mem0 caveat.** OSS Mem0 uses wall-clock timestamps internally and its built-in',
+          'extraction is tuned to personal-assistant facts. The adapter dates surfaced statements',
+          'with the scenario clock; dropped technical facts remain observable engine behaviour.',
+        ]
+      : []),
     '',
     '## Configs',
     '',
