@@ -109,7 +109,7 @@ export async function runTurn(input: TurnInput, options: RunTurnOptions = {}): P
 
   const result = await generateText({
     model: options.model ?? resolveModel(input.model),
-    temperature: input.model.temperature ?? 0,
+    ...(input.model.temperature === undefined ? {} : { temperature: input.model.temperature }),
     instructions: buildSystemPrompt({
       now: input.now,
       customer: input.customer,

@@ -25,7 +25,9 @@ not the scenario. Checks after a `wiki_update` step that promoted the item are e
 
 - **K1 personal, «Дом и сад».** Выгружает каталог из «СкладУчёт»: UTF-8 с BOM, разделитель «;», артикулы с ведущими нулями, sku в кавычках, импорт по понедельникам. The name «СкладУчёт» appears nowhere in the wiki.
 - **K2 undocumented, product.** BOM в начале файла ломает распознавание заголовка sku; существующие товары обновляются по совпадению названия; новые строки без sku пропускаются молча и не попадают в отчёт. The wiki says only: products are matched by `sku`, errors are listed in the report.
-- **K3 temporal, «Дом и сад», until 2026-09-10.** 37 товаров загружены вручную; до релиза 10 сентября сохранять «UTF-8 без BOM»; после релиза BOM удаляется автоматически и пропущенные строки попадают в отчёт. No release dates or upcoming fixes anywhere in the wiki.
+- **K3 temporal, «Дом и сад», until 2026-09-10.** До релиза импортёра 10 сентября сохранять экспорт как «UTF-8 без BOM». No release dates or upcoming fixes anywhere in the wiki.
+- **K4 personal, «Дом и сад».** 37 пропущенных позиций инженеры загрузили вручную 27 августа и попросили Марину их проверить. The isolation discriminator: unlike K3, none of it can be reached from generic BOM advice, so `must_not_use` on another merchant's thread measures leakage only.
+- **K5 undocumented, product.** Релиз импортёра от 10 сентября вышел: BOM удаляется автоматически, пропущенные строки видны в отчёте, сохранять «без BOM» вручную больше не нужно. Learned only from the 11 September coach note — the wiki has no release notes, and the August note stated a plan, not an outcome.
 
 ### `setup-from-the-question`
 

@@ -4,8 +4,9 @@
 #
 # The wiki documents the CSV format and says errors are listed in the import
 # report. It does NOT know that a BOM breaks the sku header, that new rows
-# without a recognised sku are skipped silently, or that a fix is scheduled.
-# Anything the agent gets right in threads B/C/D2 it can only have learned.
+# without a recognised sku are skipped silently, that a fix was scheduled, or
+# that it shipped. Anything the agent gets right in threads B/C/D2 it can only
+# have learned.
 
 id: csv-import-dropped-rows
 title: CSV import silently drops rows — learn the cause, reuse it later
@@ -48,16 +49,44 @@ knowledge:
       считаются ошибками.
     source: [t1-coach-note]
 
+  # Only the dated obligation. The manual load (K4) and the shipped release (K5)
+  # are separate items on purpose: a fact that expires, a fact that stays private
+  # and a fact that replaces the expired one are three different tests, and one
+  # statement carrying all three cannot be scored for any of them (see K4).
   K3:
     kind: temporal
     about: dom_i_sad
     statement: >-
-      Пропущенные 37 товаров «Дом и сад» инженеры загрузили вручную 27 августа.
-      До релиза импортёра 10 сентября магазину нужно сохранять экспорт из
-      «СкладУчёт» как «UTF-8 без BOM»; после релиза импортёр будет удалять BOM
-      сам и показывать пропущенные строки в отчёте.
+      До релиза импортёра 10 сентября «Дом и саду» нужно при каждой выгрузке
+      сохранять экспорт из «СкладУчёт» как «UTF-8 без BOM», иначе импорт снова
+      пропустит новые строки.
     valid_until: 2026-09-10
     source: [t1-human-reply, t1-coach-note]
+
+  # The isolation discriminator. Nothing here can be derived from the wiki or
+  # from generic BOM advice, so `must_not_use` on another merchant's thread
+  # measures leakage and nothing else.
+  K4:
+    kind: personal
+    about: dom_i_sad
+    statement: >-
+      37 новых позиций «Дом и сад», пропущенных импортом 26 августа, инженеры
+      загрузили в магазин вручную 27 августа и попросили Марину их проверить.
+    source: [t1-human-reply, t1-coach-note]
+
+  # The other half of the temporal transition: the expired K3 is replaced, not
+  # merely dropped. Without this the agent cannot know the release actually
+  # shipped — the earlier note stated a plan, and asserting platform state from
+  # a plan is what the system prompt forbids.
+  K5:
+    kind: undocumented
+    about: product
+    scope: customer
+    statement: >-
+      Релиз импортёра от 10 сентября вышел: импортёр сам удаляет BOM в начале
+      файла и показывает пропущенные строки в отчёте, поэтому сохранять файл
+      «без BOM» вручную больше не требуется.
+    source: [t1-coach-note-2]
 
 steps:
 
@@ -181,6 +210,28 @@ steps:
           Does not re-diagnose or ask the customer to describe the problem
           again.
 
+  # ---- The release ships: a human confirms it on the closed ticket --------
+  - id: t1-coach-note-2
+    type: coach_note
+    thread: tkt_dom_i_sad_1
+    author: eng.oleg
+    at: 2026-09-11T09:30:00Z
+    scope: customer
+    note: >-
+      K5. Not `scope: product`: the engineer answered this merchant's ticket,
+      and only an explicit broadcast makes a fact shared (principle 4). So the
+      confirmation reaches «Дом и сад» and no one else, which is what the
+      isolation checks on threads D and D2 still assume.
+    content: |
+      Релиз импортёра выехал вчера, 10 сентября, по плану. Импортёр теперь сам
+      удаляет BOM в начале файла и показывает пропущенные строки в отчёте.
+      «Дом и саду» больше не нужно выбирать «UTF-8 без BOM» при экспорте —
+      если спросят, можно подтверждать это прямо.
+
+  - id: consolidate-2
+    type: consolidate
+    at: 2026-09-11T10:00:00Z
+
   # ---- Thread C: same merchant, after the release (personal + undocumented)
   - id: t3-open
     type: customer_message
@@ -196,11 +247,13 @@ steps:
     type: agent_turn
     thread: tkt_dom_i_sad_3
     note: >-
-      After valid_until: the agent must explain the cause (K1, K2) and must
-      not claim the manual "without BOM" step is still required (K3).
+      After valid_until: the agent must explain the cause (K1, K2), say the
+      release shipped (K5, from the 11 September note — it is not entitled to
+      infer that from the earlier plan) and must not claim the manual
+      "without BOM" step is still required (K3).
     expect:
       outcome: answer
-      uses: [K1, K2]
+      uses: [K1, K2, K5]
       must_not_use: [K3]
       reply:
         must: ["/BOM/i", "/sku|артикул/i"]
@@ -229,11 +282,11 @@ steps:
     note: >-
       Isolation check. K2 was learned on «Дом и сад»'s ticket and is not in the
       wiki yet, so the agent has nothing to answer from: P-002 says escalate.
-      K1/K3 are «Дом и сад»'s and must never surface here.
+      K1/K4 are «Дом и сад»'s and must never surface here.
     expect:
       outcome: escalate
       tolerated: [ask]
-      must_not_use: [K1, K3]
+      must_not_use: [K1, K4]
       reply:
         must_not: ["/дом и сад/i", "/СкладУчёт/i"]
         rubric: >-
@@ -266,11 +319,14 @@ steps:
     type: agent_turn
     thread: tkt_velo_dvor_2
     note: >-
-      Now answerable from the wiki. Still an isolation check for K1/K3.
+      Now answerable from the wiki. Still an isolation check, and K4 is what
+      makes it one: once K2 is public, a correct answer naturally recommends
+      saving without a BOM, so K3 would score against any good reply — even
+      with engine `none`, which has no memory to leak from.
     expect:
       outcome: answer
       uses: [K2]
-      must_not_use: [K1, K3]
+      must_not_use: [K1, K4]
       reply:
         must: ["/BOM/i"]
         must_not: ["/дом и сад/i", "/СкладУчёт/i"]
@@ -293,7 +349,7 @@ probes:
     customer: velo_dvor
     query: "BOM СкладУчёт импорт CSV пропущенные строки"
     expect:
-      must_not_recall: [K1, K3]
+      must_not_recall: [K1, K4]
 
   - id: documentation-candidates
     type: documentation_proposals

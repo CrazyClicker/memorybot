@@ -27,7 +27,7 @@ Evals come first. The dev UI reuses the eval machinery instead of a separate run
 4. **Everything learned on a customer's ticket belongs to that customer, unless a human broadcasts it.** Product facts reach other customers in two ways only: a human accepts a documentation proposal into the wiki (`wiki_update` step), or a human marks a coach note `scope: product`, which stores the fact as `scope: shared` so every customer's recall sees it (incidents, platform-wide temporary conditions). The agent never promotes on its own. No shared-knowledge layer, no `by_config`.
 5. **Every write is dated with the scenario clock** ("По состоянию на 2026-08-27: …"). Hosted engines stamp wall-clock time, so the date must live in the text.
 6. **Anything an engine cannot serve is `skipped`, never `fail`.**
-7. **Cheap first.** Deterministic checks before judge calls. Small model for the agent, a stronger model for the judge. Temperature 0.
+7. **Cheap first.** Deterministic checks before judge calls. Small model for the agent, a stronger model for the judge. Sampling temperature is set only for models that support it; GPT-5.6 reasoning models omit it.
 8. **Content in Russian, development in English.** Wiki pages, customer messages, human replies, coach notes and knowledge statements are Russian. Ids, keys, rubrics, code, docs and reports are English.
 
 ## 2. Decisions (confirmed)
@@ -42,7 +42,7 @@ Evals come first. The dev UI reuses the eval machinery instead of a separate run
 | D6 | Wiki access | Page index (slug, title, summary) in the system prompt plus a `read_page(slug)` tool. Optional `search_wiki` via MiniSearch. |
 | D7 | Cross-customer facts | Durable product facts: through the wiki via a `wiki_update` step. Time-sensitive platform-wide facts (an outage, a delayed payout run): a coach note with `scope: product` becomes a memory item with `scope: shared`. Both gates are human; the agent's `remember` tool is always `scope: customer`. |
 | D8 | Language | Content Russian, development English. The judge is told the text may be in either language. |
-| D9 | Models | Agent: OpenAI, `gpt-4o-mini` as in the v1 README or the current mini model, pinned in the config. Judge: a stronger model, preferably another vendor (`claude-sonnet-5`) to avoid self-preference; otherwise the strongest OpenAI model available. mem0 uses the OpenAI key for its LLM and embeddings. |
+| D9 | Models | Agent: OpenAI, `gpt-5.6-terra`, pinned in the config. Judge: a stronger model, preferably another vendor (`claude-sonnet-5`) to avoid self-preference; otherwise the strongest OpenAI model priced in `MODEL_PRICES`, today `gpt-5.6-sol` (`JUDGE_FALLBACK_MODEL`). mem0 uses the OpenAI key for its LLM and embeddings. |
 | D10 | Memory read/write axes | `memory.read: hydrate \| tool \| both`, `memory.write: consolidate \| agent \| both`. Full matrix runs `write: consolidate` first, then `both`. |
 
 ## 3. Target repository layout
@@ -148,7 +148,7 @@ export interface TurnResult {
 ```yaml
 # evals/configs/notes-consolidate.yaml
 id: notes-consolidate
-agent:  { provider: openai, model: gpt-4o-mini, temperature: 0 }
+agent:  { provider: openai, model: gpt-5.6-terra }
 memory: { engine: notes, read: hydrate, write: consolidate }   # engine: none | naive | notes | mem0 | xmemory
 judge:  { provider: anthropic, model: claude-sonnet-5 }
 ```
@@ -168,7 +168,7 @@ parallel and meet at T2.8.
 
 - [x] **T1.1 (M)** Write the wiki in Russian (11 pages, ≈2 700 words, leak grep clean): 10–15 pages with frontmatter `slug`, `title`, `summary`. Suggested pages: начало работы; платежи и выплаты; доставка и зоны; налоги и чеки; импорт и экспорт товаров CSV; домены и SSL; заказы и возвраты; скидки и промокоды; интеграции (вебхуки, API-ключи); тарифы и оплата; правила поддержки: когда эскалировать (платежи, юридические вопросы, потеря данных, безопасность всегда эскалируются).
 - [x] **T1.2 (S)** `wiki/README.md`: facts deliberately absent from the wiki = every K item of every scenario. Update it whenever a scenario is added.
-- [x] **T1.3 (M)** Scenario 1 `csv-import-dropped-rows.yaml` (written). Thread A: escalate (P-002), merchant follow-up with K1, coach note + human reply with K2 and K3 → consolidate → thread B before `valid_until` (`uses: [K3]`) → thread C after (`uses: [K1, K2]`, `must_not_use: [K3]`) → thread D, another merchant (escalate, isolation) → `wiki_update` with K2 → thread D2 (`answer`, `uses: [K2]`) → 3 probes.
+- [x] **T1.3 (M)** Scenario 1 `csv-import-dropped-rows.yaml` (written). Thread A: escalate (P-002), merchant follow-up with K1, coach note + human reply with K2, the dated obligation K3 and the manual fix K4 → consolidate → thread B before `valid_until` (`uses: [K3]`) → a second coach note confirming the release shipped (K5) → consolidate → thread C after (`uses: [K1, K2, K5]`, `must_not_use: [K3]`) → thread D, another merchant (escalate, isolation on K1/K4) → `wiki_update` with K2 → thread D2 (`answer`, `uses: [K2]`, `must_not_use: [K1, K4]`) → 3 probes.
 - [x] **T1.4 (S)** Scenario 2 `setup-from-the-question.yaml` (written): learning source 1 only. «Кофе-точка» asks a delivery-zone question the wiki answers and states its setup on the way: K1 two-stage payments because coffee is roasted to order (background), K2 delivery only within Томская область (the subject) → `answer`, no escalation → consolidate → thread B "can the order wait two weeks?" needs K1 (`answer`, `uses: [K1]`, rubric: does not ask which payment mode) → thread C "buyer from Novosibirsk cannot order" needs K2 → thread D, «Лаванда» asks B's question (`must_not_use: [K1, K2]`) → 3 probes. Separates the write paths: `write: agent` must catch K1/K2 in-turn with no coach note to lean on, `write: consolidate` must extract them from a two-message transcript.
 - [x] **T1.5 (S)** Scenario 3 `payment-provider-incident.yaml` (written): the **shared temporal** case. «Кофе-точка» reports card payments failing → escalate (P-001). Human reply + two coach notes: `scope: product` with the incident (K1 temporal, shared: «Оплатим» не проводит карты с 12:00 5 сентября, восстановление к 18:00, QR работает) and `scope: customer` with the reporter's orders and the open double-charge case (K2 personal). Consolidate at 14:00. «Лаванда» asks at 15:00 → `answer`, `uses: [K1]`, `must_not_use: [K2]`, no new escalation (P-007). «Лаванда» asks on 7 September → `must_not_use: [K1]`, rubric "treats it as resolved". «Кофе-точка» chases order 1153 on 7 September without naming it → `escalate`, `uses: [K2]`, `must_not_use: [K1]`. Probes: recall for «Лаванда» returns K1 and not K2, recall for «Кофе-точка» returns both, no documentation candidates.
 - [ ] **T1.6 (S)** Wiki leak lint (`pnpm eval lint-wiki`): run every scenario with engine `none`; every `uses:` must fail, except checks after a `wiki_update` that promoted the item. A passing `uses` means the fact is in the wiki; remove it from the wiki, not from the scenario. Run after every wiki edit.
@@ -182,7 +182,7 @@ parallel and meet at T2.8.
 - [x] **T2.5 (M)** `runner.ts`: executes steps in order under the scenario clock; threads in memory; on `agent_turn` hydrates via `engine.recall(customer, latestCustomerMessage, now)`, calls `runTurn`, appends `agent_reply`, passes `memoryWrites` to `engine.write`; on `consolidate` calls `engine.consolidate` for every thread with new events since the last consolidate; under `write: agent` the transcript is reduced to `coach_note` events only, so human notes are ingested in every mode and the modes differ in who extracts facts from the conversation; coach notes with `scope: product` yield `scope: shared` items; on `wiki_update` appends the K statements to the page; probes at the end. `engine.reset()` before each run. `--repeat N`.
 - [x] **T2.6 (M)** `checks.ts` + `judge.ts`: deterministic first (`outcome`, `tolerated`, `reply.must/must_not`, `escalation.reason_must`), then judge (`uses`, `must_not_use`, `reply.rubric`, probe `recalls/must_not_recall/proposes`). One judge prompt template: fact statement + text + "does the text convey this fact? Text may be Russian or English." → `pass|partial|fail` + one-line why. Every judge call logged with its prompt.
 - [x] **T2.7 (M)** `report.ts`: results JSON per run (`evals/results/<run-id>/<scenario>.<config>.<rep>.json`) and `REPORT.md`: one table per scenario, rows = checks, columns = configs, cells = pass rate over repeats (✓ ◐ ✗ –), totals, cost and median latency per config, a "which path learned it" column per K item (agent / consolidate / none), and a findings section listing every check where configs disagree.
-- [ ] **T2.8 (S)** Smoke run: scenario 1 × {`none`, `naive`}. *Done when:* `none` fails every `uses`, passes every isolation check; `naive` passes at least the same-customer `uses` checks. Commit the report as the first baseline.
+- [x] **T2.8 (S)** Smoke run: scenario 1 × {`none`, `naive`} → `evals/BASELINE.md` (run `baseline-2`). `none` fails every `uses` before the `wiki_update` and passes every isolation check, so the wiki is clean. `naive` lands its same-customer `uses` as `partial` rather than `pass`, with one `fail` against `none`'s eleven; both `recalls:` probes pass, so the facts are in memory and the gap is the agent's use of them, not retrieval. Left standing as the baseline `notes` has to beat, not tuned away.
 
 **Checkpoint M1-lite:** 1 scenario × {none, naive, notes} × {consolidate, agent} → report. Reachable before any external engine.
 
@@ -230,7 +230,7 @@ parallel and meet at T2.8.
 - **xmemory.** Verify the TS SDK API before T3.3 (the Python client and `xmemcli` are documented; a REST adapter is the fallback). Async writes need a sync flag or polling. Free tier today: 70k tokens/month and 5 instances (console shows 0/70K). Run xmemory last, 1 repeat; upgrade only if it proves interesting.
 - **mem0** needs an embedder key, may drop technical facts, has no scenario clock. Findings, not bugs.
 - **Two write paths blur attribution.** `source.via` on every item and the per-K "which path learned it" column in the report keep them separable.
-- **Nondeterminism:** `--repeat 3`, temperature 0, pass rates.
+- **Nondeterminism:** GPT-5.6 reasoning models do not support `temperature`, so `--repeat 3` and pass rates are the primary way to expose model variance. For models that support sampling temperature, pin it explicitly in the config.
 - **Wiki leaks** make memory look good for the wrong reason: T1.6 after every wiki edit.
 - **Judge self-preference:** judge model ≠ agent model where a second key exists; spot-check verdicts.
 - **Russian content and the judge:** the judge prompt states the language explicitly; regex checks in scenarios must use Russian stems (`/таблиц|table/i`) where the reply is Russian.

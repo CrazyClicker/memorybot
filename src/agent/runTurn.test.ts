@@ -202,6 +202,26 @@ describe('runTurn', () => {
     expect(names).toEqual(['finish', 'read_page']);
   });
 
+  it('sends temperature only when the model config sets it', async () => {
+    const withoutTemperature = new MockLanguageModelV4({
+      doGenerate: toolCall('finish', { outcome: 'answer', reply: 'Готово.' }, 'call-finish'),
+    });
+    await runTurn(
+      turnInput({ model: { provider: 'openai', model: 'gpt-5.6-terra' } }),
+      { model: withoutTemperature },
+    );
+    expect(withoutTemperature.doGenerateCalls[0]?.temperature).toBeUndefined();
+
+    const withTemperature = new MockLanguageModelV4({
+      doGenerate: toolCall('finish', { outcome: 'answer', reply: 'Готово.' }, 'call-finish'),
+    });
+    await runTurn(
+      turnInput({ model: { provider: 'openai', model: 'gpt-4o-mini', temperature: 0 } }),
+      { model: withTemperature },
+    );
+    expect(withTemperature.doGenerateCalls[0]?.temperature).toBe(0);
+  });
+
   it('rejects a natural-language response that does not call finish', async () => {
     const model = new MockLanguageModelV4({ doGenerate: textResult('Обычный ответ.') });
     await expect(runTurn(turnInput(), { model })).rejects.toBeInstanceOf(AgentDidNotFinishError);

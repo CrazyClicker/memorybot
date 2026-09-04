@@ -93,7 +93,7 @@ const INSTRUCTIONS = [
  * Fallback judge when the configured vendor has no key (ROADMAP D9). The strongest OpenAI
  * model in `MODEL_PRICES`; update it when a stronger one is priced there.
  */
-export const JUDGE_FALLBACK_MODEL = 'gpt-5.4';
+export const JUDGE_FALLBACK_MODEL = 'gpt-5.6-sol';
 
 export interface JudgeChoice {
   readonly spec: ModelSpec;
@@ -136,7 +136,7 @@ export function createJudge(spec: ModelSpec, options: JudgeOptions = {}): Judge 
   const ask = async (prompt: string): Promise<AskResult> => {
     const result = await generateText({
       model,
-      temperature: spec.temperature ?? 0,
+      ...(spec.temperature === undefined ? {} : { temperature: spec.temperature }),
       instructions: INSTRUCTIONS,
       prompt,
       output: Output.object({ schema: JudgeVerdictSchema }),

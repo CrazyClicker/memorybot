@@ -6,9 +6,16 @@
  * column. Prices are per 1M tokens.
  *
  * Sources, with the date they were checked — re-check before quoting costs in a report:
- *   openai    2026-09-03  https://developers.openai.com/api/docs/pricing
+ *   openai    2026-09-04  https://developers.openai.com/api/docs/pricing
  *   anthropic 2026-09-03  https://docs.anthropic.com/en/docs/about-claude/pricing
- * Anthropic charges cache reads at 0.1x and cache writes at 1.25x the base input price.
+ * Anthropic charges cache reads at 0.1x and cache writes at 1.25x the base input price; the
+ * gpt-5.6 family bills cache reads at 0.1x and cache writes at 1.25x as well.
+ *
+ * Not modelled: the gpt-5.6 long-context tier, which bills a request whose prompt exceeds
+ * ~272k tokens at 2x input and 1.5x output for the whole call. Our prompts are a wiki index
+ * plus one thread — two orders of magnitude short of it — so a flat rate is right here. A
+ * scenario that ever approaches that size needs a tier in `ModelPrice`, not a fudged number.
+ * gpt-5.6-sol's price is promotional at least through 2026-11-21.
  *
  * Not covered here: what a hosted memory engine spends inside its own API (mem0's extraction
  * and embedding calls, xmemory's reads). Those never pass through our usage accounting, so
@@ -46,6 +53,9 @@ export const MODEL_PRICES: Readonly<Record<string, ModelPrice>> = {
   'openai:gpt-5.4': { input: 2.5, cacheRead: 0.25, output: 15.0 },
   'openai:gpt-5.4-mini': { input: 0.75, cacheRead: 0.075, output: 4.5 },
   'openai:gpt-5.4-nano': { input: 0.2, cacheRead: 0.02, output: 1.25 },
+  'openai:gpt-5.6-sol': { input: 4.0, cacheRead: 0.4, cacheWrite: 5.0, output: 20.0 },
+  'openai:gpt-5.6-terra': { input: 2.0, cacheRead: 0.2, cacheWrite: 2.5, output: 12.0 },
+  'openai:gpt-5.6-luna': { input: 0.2, cacheRead: 0.02, cacheWrite: 0.25, output: 1.2 },
   'anthropic:claude-haiku-4-5': { input: 1.0, cacheRead: 0.1, cacheWrite: 1.25, output: 5.0 },
   'anthropic:claude-sonnet-5': { input: 2.0, cacheRead: 0.2, cacheWrite: 2.5, output: 10.0 },
   'anthropic:claude-opus-5': { input: 5.0, cacheRead: 0.5, cacheWrite: 6.25, output: 25.0 },

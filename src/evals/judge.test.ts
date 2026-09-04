@@ -258,6 +258,24 @@ describe('judge failures', () => {
   });
 });
 
+describe('judge model settings', () => {
+  it('sends temperature only when the judge config sets it', async () => {
+    const withoutTemperature = new MockLanguageModelV4({ doGenerate: verdict('pass') });
+    await createJudge(
+      { provider: 'openai', model: 'gpt-5.6-sol' },
+      { model: withoutTemperature },
+    ).turn({ uses: ['K1'] }, turn('У «Оплатим» временный сбой.'), KNOWLEDGE);
+    expect(withoutTemperature.doGenerateCalls[0]?.temperature).toBeUndefined();
+
+    const withTemperature = new MockLanguageModelV4({ doGenerate: verdict('pass') });
+    await createJudge(
+      { provider: 'anthropic', model: 'claude-sonnet-5', temperature: 0 },
+      { model: withTemperature },
+    ).turn({ uses: ['K1'] }, turn('У «Оплатим» временный сбой.'), KNOWLEDGE);
+    expect(withTemperature.doGenerateCalls[0]?.temperature).toBe(0);
+  });
+});
+
 describe('resolveJudgeSpec', () => {
   const bothKeys = { ANTHROPIC_API_KEY: 'sk-ant', OPENAI_API_KEY: 'sk-openai' };
 

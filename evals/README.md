@@ -166,7 +166,7 @@ in [configs/](configs/):
 
 ```yaml
 id: notes
-agent:  { provider: openai, model: gpt-4o-mini, temperature: 0 }
+agent:  { provider: openai, model: gpt-5.6-terra }
 memory:
   engine: notes                # none | naive | notes | mem0 | xmemory
   read: hydrate                # hydrate: recall() result in the prompt | tool: recall_memory tool | both
@@ -174,6 +174,10 @@ memory:
                                # coach notes are ingested at consolidate steps in every mode
 judge:  { provider: anthropic, model: claude-sonnet-5 }
 ```
+
+`temperature` is optional and is sent only when explicitly configured. The GPT-5.6 reasoning
+models used by the agent and the OpenAI judge fallback do not support it, so their configs
+omit it; repeat runs measure the remaining model variance.
 
 `memory.engine: none` is the control: it must fail every `uses:` check and pass every
 isolation check. `naive` (whole transcripts per customer, stuffed into the prompt) is the
