@@ -6,3 +6,4 @@ evals/results/
 .llm-cache/
 .DS_Store
 *.log
+PLAN-*.md
