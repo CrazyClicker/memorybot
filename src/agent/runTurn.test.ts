@@ -3,7 +3,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { MemoryItem, ThreadTranscript } from '../memory/index.ts';
 import { Wiki } from '../wiki/index.ts';
-import { AgentDidNotFinishError, MAX_AGENT_STEPS, runTurn, type TurnInput } from './runTurn.ts';
+import { AgentDidNotFinishError, FINISH_NUDGE, MAX_AGENT_STEPS, runTurn, type TurnInput } from './runTurn.ts';
 
 const NOW = '2026-09-05T15:00:00Z';
 type MockGenerateResult = Awaited<ReturnType<MockLanguageModelV4['doGenerate']>>;
@@ -177,7 +177,7 @@ describe('runTurn', () => {
       'finish',
     ]);
     expect(result.trace[0]?.toolCalls[0]?.output).toContain('Платёжные споры эскалируются.');
-    expect(result.trace[1]?.toolCalls[0]?.output).toEqual([recalled]);
+    expect(result.trace[1]?.toolCalls[0]?.output).toEqual([{ ...recalled, status: 'active' }]);
 
     const firstCall = JSON.stringify(model.doGenerateCalls[0]?.prompt);
     expect(firstCall).toContain('Текущий момент по часам сценария: 2026-09-05T15:00:00Z');
@@ -222,9 +222,28 @@ describe('runTurn', () => {
     expect(withTemperature.doGenerateCalls[0]?.temperature).toBe(0);
   });
 
+  it('nudges once when the model stops in plain text, and keeps both parts in the trace', async () => {
+    const model = new MockLanguageModelV4({
+      doGenerate: [
+        textResult('Обычный ответ без вызова finish.'),
+        toolCall('finish', { outcome: 'answer', reply: 'Обычный ответ без вызова finish.' }, 'call-finish'),
+      ],
+    });
+    const result = await runTurn(turnInput(), { model });
+    expect(result.outcome).toBe('answer');
+    expect(result.trace.map((step) => step.step)).toEqual([1, 2]);
+    expect(result.trace[0]?.text).toBe('Обычный ответ без вызова finish.');
+    expect(result.trace[1]?.toolCalls[0]?.tool).toBe('finish');
+    expect(result.usage.inputTokens).toBe(20);
+    const nudge = JSON.stringify(model.doGenerateCalls[1]?.prompt);
+    expect(nudge).toContain('Обычный ответ без вызова finish.');
+    expect(nudge).toContain(FINISH_NUDGE);
+  });
+
   it('rejects a natural-language response that does not call finish', async () => {
     const model = new MockLanguageModelV4({ doGenerate: textResult('Обычный ответ.') });
-    await expect(runTurn(turnInput(), { model })).rejects.toBeInstanceOf(AgentDidNotFinishError);
+    await expect(runTurn(turnInput(), { model })).rejects.toMatchObject({ steps: 2, finishReason: 'stop' });
+    expect(model.doGenerateCalls).toHaveLength(2);
   });
 
   it('stops after eight model steps when finish is never called', async () => {

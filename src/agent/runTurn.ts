@@ -18,6 +18,7 @@ import {
   type TraceStep,
 } from '../evals/schema.ts';
 import {
+  addUsage,
   costUsd as calculateCostUsd,
   type ModelRef,
   resolveModel,
@@ -35,6 +36,16 @@ import { createWikiTools, type Wiki } from '../wiki/index.ts';
 import { type AgentCustomer, buildSystemPrompt, renderThread } from './prompt.ts';
 
 export const MAX_AGENT_STEPS = 8;
+
+/**
+ * The model occasionally answers in plain text and stops without calling `finish`. One nudge
+ * turns that flake into a normal turn instead of a run that dies after the paid steps; the
+ * extra steps stay in the trace, so the nudge is visible in the results.
+ */
+export const FINISH_NUDGE =
+  'Ход не завершён: вызови инструмент `finish` с outcome и полным ответом клиенту. ' +
+  'Если ответ уже написан выше, повтори его в `finish.reply`.';
+const NUDGE_STEPS = 2;
 
 export interface AgentModelRef extends ModelRef {
   readonly temperature?: number;
@@ -107,28 +118,53 @@ export async function runTurn(input: TurnInput, options: RunTurnOptions = {}): P
   const nowMs = options.nowMs ?? (() => performance.now());
   const startedAt = nowMs();
 
+  const model = options.model ?? resolveModel(input.model);
+  const temperature = input.model.temperature === undefined ? {} : { temperature: input.model.temperature };
+  const instructions = buildSystemPrompt({
+    now: input.now,
+    customer: input.customer,
+    memory: input.memory,
+    wiki: input.wiki,
+    recallMemoryEnabled: input.tools.recallMemory,
+    rememberEnabled: input.tools.remember,
+  });
+  const threadPrompt = renderThread(input.thread);
+
   const result = await generateText({
-    model: options.model ?? resolveModel(input.model),
-    ...(input.model.temperature === undefined ? {} : { temperature: input.model.temperature }),
-    instructions: buildSystemPrompt({
-      now: input.now,
-      customer: input.customer,
-      memory: input.memory,
-      wiki: input.wiki,
-      recallMemoryEnabled: input.tools.recallMemory,
-      rememberEnabled: input.tools.remember,
-    }),
-    prompt: renderThread(input.thread),
+    model,
+    ...temperature,
+    instructions,
+    prompt: threadPrompt,
     tools,
     stopWhen: [hasToolCall('finish'), isStepCount(MAX_AGENT_STEPS)],
   });
+  const steps: AiStepResult<ToolSet>[] = [...result.steps];
+  let usage = tokenUsage(result.usage);
+  let finishReason: string = result.finalStep.finishReason;
+
+  if (state.finish === undefined && finishReason === 'stop') {
+    const nudged = await generateText({
+      model,
+      ...temperature,
+      instructions,
+      messages: [
+        { role: 'user', content: threadPrompt },
+        ...result.response.messages,
+        { role: 'user', content: FINISH_NUDGE },
+      ],
+      tools,
+      stopWhen: [hasToolCall('finish'), isStepCount(NUDGE_STEPS)],
+    });
+    steps.push(...nudged.steps);
+    usage = addUsage(usage, tokenUsage(nudged.usage));
+    finishReason = nudged.finalStep.finishReason;
+  }
   const latencyMs = Math.max(0, nowMs() - startedAt);
 
   if (state.finish === undefined) {
-    throw new AgentDidNotFinishError(result.steps.length, result.finalStep.finishReason);
+    throw new AgentDidNotFinishError(steps.length, finishReason);
   }
 
-  const usage = tokenUsage(result.usage);
   const costUsd = calculateCostUsd(input.model, usage);
   return {
     outcome: state.finish.outcome,
@@ -137,7 +173,7 @@ export async function runTurn(input: TurnInput, options: RunTurnOptions = {}): P
       ? {}
       : { escalationReason: state.finish.escalation_reason }),
     memoryWrites: state.memoryWrites.map(cloneMemoryItem),
-    trace: result.steps.map(traceStep),
+    trace: steps.map((step, index) => traceStep(step, index + 1)),
     usage,
     ...(costUsd === undefined ? {} : { costUsd }),
     latencyMs,
@@ -172,7 +208,17 @@ function createAgentTools(
         const items = recallMemory === undefined
           ? input.memory
           : await recallMemory(input.customer.id, query, input.now);
-        return items.filter((item) => canRecall(item, input.customer.id)).map(cloneMemoryItem);
+        const nowMs = Date.parse(input.now);
+        return items
+          .filter((item) => canRecall(item, input.customer.id))
+          .map((item) => ({
+            ...cloneMemoryItem(item),
+            status: item.validUntil === undefined
+              ? 'not_applicable'
+              : Date.parse(item.validUntil) < nowMs
+                ? 'expired'
+                : 'active',
+          }));
       },
     });
   }
@@ -212,9 +258,10 @@ function createAgentTools(
   return { ...createWikiTools(input.wiki), ...optionalTools, finish };
 }
 
-function traceStep(step: AiStepResult<ToolSet>): TraceStep {
+/** `number` is the position in the whole turn: a nudged continuation restarts the SDK's count. */
+function traceStep(step: AiStepResult<ToolSet>, number: number): TraceStep {
   return {
-    step: step.stepNumber + 1,
+    step: number,
     ...(step.text === '' ? {} : { text: step.text }),
     toolCalls: traceToolCalls(step),
     usage: tokenUsage(step.usage),
