@@ -127,6 +127,46 @@ describe('createJudge().turn', () => {
     expect(judged.checks[0]?.verdict).toBe('partial');
   });
 
+  it('reads a temporal fact as "in force now" on a turn, and as plain recall in a probe', async () => {
+    const onTurn = mockJudge([verdict('pass'), verdict('pass')]);
+    const judged = await onTurn.judge.turn(
+      { uses: ['K1', 'K2'] },
+      turn('Карты не проходят, восстановление к 18:00; по заказу 1153 разбираемся.'),
+      KNOWLEDGE,
+    );
+    expect(judged.checks[0]?.judgePrompt).toContain('assert this FACT as currently in force?');
+    expect(judged.checks[0]?.judgePrompt).toContain('past, planned or no longer in effect');
+    expect(judged.checks[1]?.judgePrompt).toContain('Does the TEXT convey this FACT?');
+
+    const inProbe = mockJudge([verdict('pass')]);
+    const probe: Probe = {
+      id: 'recall-lavanda',
+      type: 'memory_recall',
+      customer: 'lavanda',
+      query: 'карты не проходят',
+      expect: { recalls: ['K1'] },
+    };
+    const probed = await inProbe.judge.probe(
+      probe,
+      [item('По состоянию на 2026-09-05: карты не проходят, восстановление к 18:00.')],
+      KNOWLEDGE,
+    );
+    expect(probed.checks[0]?.judgePrompt).toContain('Does the TEXT convey this FACT?');
+    expect(probed.checks[0]?.judgePrompt).not.toContain('currently in force');
+  });
+
+  it('tells the judge that generic or conditional text does not convey a fact', async () => {
+    const { judge } = mockJudge([verdict('fail')]);
+    const judged = await judge.turn(
+      { uses: ['K2'] },
+      turn('Если платёж ожидает подтверждения, холд снимется через 7 дней.'),
+      KNOWLEDGE,
+    );
+    expect(judged.checks[0]?.judgePrompt).toContain('would read the same without knowing the fact');
+    expect(judged.checks[0]?.judgePrompt).toContain('incidental details left out do not lower the verdict');
+    expect(judged.checks[0]?.verdict).toBe('fail');
+  });
+
   it('calls nothing for a turn with no judged expectation', async () => {
     const { judge, prompts } = mockJudge([]);
     expect(await judge.turn(undefined, turn('Ответ.'), KNOWLEDGE)).toMatchObject({ checks: [] });

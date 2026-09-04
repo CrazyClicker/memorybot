@@ -156,6 +156,16 @@ Deterministic checks run first. Judge verdicts are three-valued (`pass` / `parti
 with a one-line justification, and every judge call is logged with its prompt so a human can
 audit a disputed verdict.
 
+How the judge reads `uses` / `must_not_use` (calibrated on the 2026-09-04 smoke run): `pass`
+means the reply asserts the *substance* of the statement about its subject; details left out
+do not lower the verdict, because a K statement is written out in full for the record and a
+reply is not. `partial` is a hedged or conditional assertion, or a fragment. `fail` is anything
+that would read the same without knowing the fact: a rule from the documentation, an answer
+covering every case, a mention of the topic. On an `agent_turn` a `temporal` item is judged as
+"asserted as currently in force", so a past-tense mention is not a use — which is what
+`must_not_use` after `valid_until` relies on. Probes ask only whether memory holds the
+statement, whatever its date.
+
 **Every temporal scenario** has one `agent_turn` after `valid_until` with `must_not_use` on
 the temporal item: the agent must stop asserting the expired fact.
 

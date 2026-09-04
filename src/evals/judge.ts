@@ -85,8 +85,11 @@ type JudgeVerdict = z.infer<typeof JudgeVerdictSchema>;
 const INSTRUCTIONS = [
   'You grade one output of a customer-support agent for an evaluation suite.',
   'The text may be Russian or English, and so may the fact: judge meaning, not wording,',
-  'and never reward a mere keyword match. Answer with a verdict and one line of English',
-  'justification. Be strict but literal: grade only what is asked, nothing else about the text.',
+  'and never reward a mere keyword match. A fact is written out in full for the record; a',
+  'support reply is short and is not expected to repeat it clause by clause, so grade whether',
+  'the substance reached the reader, not how many details were restated. Answer with a',
+  'verdict and one line of English justification. Be strict but literal: grade only what is',
+  'asked, nothing else about the text.',
 ].join(' ');
 
 /**
@@ -218,16 +221,14 @@ function judgeWith(ask: Ask): Judge {
   return {
     async turn(expect, turn, knowledge) {
       if (expect === undefined) return EMPTY;
+      const onTurn = { text: turn.reply, subject: 'the agent reply', temporalAsCurrent: true };
       const questions: Question[] = [
-        ...factQuestions(expect.uses, 'uses', false, turn.reply, knowledge, 'the agent reply'),
-        ...factQuestions(
-          expect.must_not_use,
-          'must_not_use',
-          true,
-          turn.reply,
-          knowledge,
-          'the agent reply',
-        ),
+        ...factQuestions(expect.uses, knowledge, { ...onTurn, prefix: 'uses', negated: false }),
+        ...factQuestions(expect.must_not_use, knowledge, {
+          ...onTurn,
+          prefix: 'must_not_use',
+          negated: true,
+        }),
       ];
       if (expect.reply?.rubric !== undefined) {
         questions.push({
@@ -252,18 +253,18 @@ function judgeWith(ask: Ask): Judge {
             ...keysFor(probe.expect.must_not_recall, 'must_not_recall'),
           ]);
         }
-        const text = memoryText(returned);
+        const inMemory = { text: memoryText(returned), subject, emptyWhy };
         return run([
-          ...factQuestions(probe.expect.recalls, 'recalls', false, text, knowledge, subject, emptyWhy),
-          ...factQuestions(
-            probe.expect.must_not_recall,
-            'must_not_recall',
-            true,
-            text,
-            knowledge,
-            subject,
-            emptyWhy,
-          ),
+          ...factQuestions(probe.expect.recalls, knowledge, {
+            ...inMemory,
+            prefix: 'recalls',
+            negated: false,
+          }),
+          ...factQuestions(probe.expect.must_not_recall, knowledge, {
+            ...inMemory,
+            prefix: 'must_not_recall',
+            negated: true,
+          }),
         ]);
       }
 
@@ -272,15 +273,13 @@ function judgeWith(ask: Ask): Judge {
         return unserved('proposals()', keysFor(probe.expect.proposes, 'proposes'));
       }
       return run(
-        factQuestions(
-          probe.expect.proposes,
-          'proposes',
-          false,
-          memoryText(returned),
-          knowledge,
+        factQuestions(probe.expect.proposes, knowledge, {
+          prefix: 'proposes',
+          negated: false,
+          text: memoryText(returned),
           subject,
-          'there are no proposals',
-        ),
+          emptyWhy: 'there are no proposals',
+        }),
       );
     },
   };
@@ -292,7 +291,10 @@ interface Question {
   readonly negated: boolean;
   readonly subject: string;
   readonly text: string;
-  readonly criterion: { type: 'fact'; fact: string } | { type: 'rubric'; rubric: string };
+  readonly criterion:
+    /** `current`: ask whether the text asserts the fact as in force now, not merely mentions it. */
+    | { type: 'fact'; fact: string; current: boolean }
+    | { type: 'rubric'; rubric: string };
   /** Recorded instead of a verdict's `why` when the text is empty and no call is made. */
   readonly emptyWhy: string;
 }
@@ -314,65 +316,110 @@ function unserved(served: string, keys: readonly string[]): JudgedChecks {
   };
 }
 
+interface FactQuestionOptions {
+  readonly prefix: string;
+  readonly negated: boolean;
+  readonly text: string;
+  readonly subject: string;
+  readonly emptyWhy?: string;
+  /**
+   * On an agent turn a temporal fact counts as used only when the reply asserts it as in
+   * force now: a past-tense mention after `valid_until` is exactly what `must_not_use` allows.
+   * Probes leave this off: they ask whether memory holds the statement, whatever its date.
+   */
+  readonly temporalAsCurrent?: boolean;
+}
+
 function factQuestions(
   ids: readonly string[] | undefined,
-  prefix: string,
-  negated: boolean,
-  text: string,
   knowledge: KnowledgeMap,
-  subject: string,
-  emptyWhy = 'the agent reply is empty',
+  options: FactQuestionOptions,
 ): Question[] {
   return (ids ?? []).map((id) => {
     const item = knowledge[id];
     if (item === undefined) throw new Error(`Unknown knowledge item "${id}"`);
     return {
-      key: `${prefix}:${id}`,
-      negated,
-      subject,
-      text,
-      criterion: { type: 'fact', fact: item.statement },
-      emptyWhy,
+      key: `${options.prefix}:${id}`,
+      negated: options.negated,
+      subject: options.subject,
+      text: options.text,
+      criterion: {
+        type: 'fact',
+        fact: item.statement,
+        current: options.temporalAsCurrent === true && item.kind === 'temporal',
+      },
+      emptyWhy: options.emptyWhy ?? 'the agent reply is empty',
     };
   });
 }
 
+interface PromptShape {
+  readonly ask: string;
+  readonly heading: string;
+  readonly body: string;
+  readonly scale: readonly string[];
+}
+
 /**
- * One template for both shapes. The judge is never told whether the expectation is positive
+ * The fact scales were calibrated on the 2026-09-04 smoke run of scenarios 2 and 3. Before it
+ * the judge docked a complete reply for clauses it did not restate, counted a both-cases
+ * answer («если у вас двухстадийная оплата…») as partly conveying a merchant's personal fact,
+ * and read a past-tense mention of an expired incident as still conveying it.
+ */
+function promptShape(criterion: Question['criterion']): PromptShape {
+  if (criterion.type === 'rubric') {
+    return {
+      ask: 'Does the TEXT satisfy these CRITERIA?',
+      heading: 'CRITERIA',
+      body: criterion.rubric,
+      scale: [
+        'pass — the text satisfies the criteria',
+        'partial — the text satisfies the criteria only in part',
+        'fail — the text does not satisfy the criteria',
+      ],
+    };
+  }
+  if (criterion.current) {
+    return {
+      ask: 'Does the TEXT assert this FACT as currently in force?',
+      heading: 'FACT',
+      body: criterion.fact,
+      scale: [
+        'pass — the text asserts the substance of the fact as true at the time of writing, in any wording or language; incidental details left out do not lower the verdict',
+        'partial — the text asserts it as true now but hedged, or asserts only a fragment of it',
+        'fail — the text does not convey the fact, contradicts it, or refers to it only as past, planned or no longer in effect',
+      ],
+    };
+  }
+  return {
+    ask: 'Does the TEXT convey this FACT?',
+    heading: 'FACT',
+    body: criterion.fact,
+    scale: [
+      'pass — the text asserts the substance of the fact about its subject, in any wording or language; incidental details left out do not lower the verdict',
+      'partial — the text asserts the substance but hedged or conditionally, or asserts only a fragment of it',
+      'fail — the text does not convey the fact or contradicts it; text that would read the same without knowing the fact — a rule from the documentation, an answer covering every possible case, a mention of the topic — does not convey it',
+    ],
+  };
+}
+
+/**
+ * One template for every shape. The judge is never told whether the expectation is positive
  * or negative, so `uses` and `must_not_use` on the same fact are graded by the same question.
  */
 function buildPrompt(question: Question): string {
-  const scale =
-    question.criterion.type === 'fact'
-      ? [
-          'pass — the text conveys the fact, in any wording or language',
-          'partial — the text gestures at the fact but is vague, hedged or incomplete',
-          'fail — the text does not convey the fact, or contradicts it',
-        ]
-      : [
-          'pass — the text satisfies the criteria',
-          'partial — the text satisfies the criteria only in part',
-          'fail — the text does not satisfy the criteria',
-        ];
-  const ask =
-    question.criterion.type === 'fact'
-      ? 'Does the TEXT convey this FACT?'
-      : 'Does the TEXT satisfy these CRITERIA?';
-  const criterion =
-    question.criterion.type === 'fact'
-      ? `FACT:\n${question.criterion.fact}`
-      : `CRITERIA:\n${question.criterion.rubric}`;
-
+  const shape = promptShape(question.criterion);
   return [
-    ask,
+    shape.ask,
     '',
-    criterion,
+    `${shape.heading}:`,
+    shape.body,
     '',
     `TEXT (${question.subject}):`,
     question.text,
     '',
     'Verdicts:',
-    ...scale.map((line) => `- ${line}`),
+    ...shape.scale.map((line) => `- ${line}`),
   ].join('\n');
 }
 
