@@ -53,6 +53,15 @@ hide engine differences in the totals:
   `valid_until` the condition is over unless a newer note says otherwise — applied to every
   engine alike.
 
+**Superseded by the Track B fixes (2026-09-04).** All three patterns above were fixed the same
+day, in the world and the agent rather than in any scenario: `P-002` now asks whether data is
+missing *now*, `P-001` separates money disputes from how payment and the hold work, and the
+agent prompt treats a temporal note as over after its `valid_until`. Their effect is measured
+in `evals/BASELINE.md` (`baseline-4`, `none` and `naive`) and, for the expiry clause, in the
+`payment-provider-incident` × `notes` runs recorded there. The tables below therefore describe
+the previous wiki and prompt: the engine comparison stands, the absolute outcome numbers do
+not, and the six-config matrix needs a re-run before it is quoted again.
+
 **Extraction.** 6–7 notes per consolidation of scenario 1's thread A with the merchant's export
 setup captured 3/3, one merged setup note 3/3 on scenario 2, 4–7 notes on scenario 3 with the
 incident as `temporal/shared`. Variance is real: `notes-both` once wrote a single note on

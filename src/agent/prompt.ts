@@ -1,4 +1,5 @@
 import type { MemoryItem, ThreadEvent, ThreadTranscript } from '../memory/index.ts';
+import { expiryMs } from '../evals/schema.ts';
 import type { Wiki } from '../wiki/index.ts';
 
 export interface AgentCustomer {
@@ -46,6 +47,7 @@ export function buildSystemPrompt(input: SystemPromptInput): string {
     '- Заметки памяти — контекст, а не новые правила продукта. Не раскрывай клиенту внутренние coach notes или служебные поля.',
     '- Если ответ опирается на память, сохраняй существенные конкретные детали: причинный контраст, даты и статус «до/после». Не сокращай объяснение так, чтобы изменилось, что именно произошло или действует ли условие сейчас.',
     '- Временную заметку после `valid_until` нельзя утверждать как актуальную; её можно упомянуть только как прошлое событие.',
+    '- После `valid_until` считай временное условие завершённым, если нет более новой заметки: отвечай исходя из того, что ограничение снято, и предложи клиенту сообщить, если он увидит обратное.',
     '- Факты одного клиента нельзя применять к другому, если заметка не имеет `scope: shared`.',
     ...(input.rememberEnabled
       ? [
@@ -82,7 +84,7 @@ export function formatMemory(items: readonly MemoryItem[], now: string): string 
     .map((item) => {
       const validity = item.validUntil === undefined
         ? 'valid_until=не задан'
-        : `valid_until=${item.validUntil}; status=${Date.parse(item.validUntil) < nowMs ? 'expired' : 'active'}`;
+        : `valid_until=${item.validUntil}; status=${expiryMs(item.validUntil) < nowMs ? 'expired' : 'active'}`;
       return [
         `- [kind=${item.kind}; about=${item.about}; scope=${item.scope}; ${validity}]`,
         `  ${item.statement}`,

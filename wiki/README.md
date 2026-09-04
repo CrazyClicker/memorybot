@@ -44,7 +44,7 @@ not the scenario. Checks after a `wiki_update` step that promoted the item are e
 - CSV: UTF-8, delimiter `,` or `;` detected from the first line, required columns `sku`, `name`, `price`, `description` up to 5000 characters, 10 000 rows per import, existing products updated by `sku`, errors listed in the import report.
 - Payments: cards and QR via «Оплатим»; one-stage and two-stage mode; a hold is cancelled automatically after 7 days and cannot be confirmed afterwards; payouts T+2, daily or weekly.
 - Delivery: an address outside every zone sees no delivery methods and cannot order; pickup is offered only in zones where it is enabled; one region belongs to exactly one zone.
-- Support rules `P-001`…`P-007` on `pravila-podderzhki`, including P-001 (money questions are escalated), P-002 (missing data after a clean import is escalated), P-006 (no invented timelines) and P-007 (known incidents are relayed, not re-escalated).
+- Support rules `P-001`…`P-007` on `pravila-podderzhki`, including P-001 (money disputes and charges are escalated, how payment and the hold work is answered), P-002 (data missing *now* is escalated, a retrospective question about a fixed import is answered), P-006 (no invented timelines) and P-007 (known incidents are relayed, not re-escalated).
 
 ## Grep list for manual checks
 
