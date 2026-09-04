@@ -328,6 +328,24 @@ describe('buildReport', () => {
     );
   });
 
+  it('records the hosted xmemory accounting and retrieval caveat', () => {
+    const xmemory = config('xmemory', {
+      memory: { engine: 'xmemory', read: 'hydrate', write: 'consolidate' },
+    });
+    const model = buildReport({
+      runId: 'xmemory-run',
+      generatedAt: START,
+      scenarios: [scenario()],
+      configs: [xmemory],
+      results: [run('xmemory', 1)],
+      unreadable: [],
+    });
+
+    const markdown = renderReport(model);
+    expect(markdown).toContain('**xmemory caveat.** Hosted xmemory uses wall-clock accounting');
+    expect(markdown).toContain('deterministic dump-and-local-rank recall');
+  });
+
   it('aggregates every positive knowledge check into the K column', () => {
     const model = report(smokeResults());
     // `uses:K2` failed and `recalls:K2` was partial for naive: mixed, not a pass.

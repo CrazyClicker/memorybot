@@ -8,6 +8,8 @@ export {
 export type {
   Kind,
   MemoryEngine,
+  MemoryEngineDiagnostics,
+  MemoryEngineTrace,
   MemoryEngineUsage,
   MemoryItem,
   ThreadEvent,
@@ -33,4 +35,23 @@ export {
   NotesMemoryEngine,
 } from './notes.ts';
 export type { NotesMemoryOptions } from './notes.ts';
+export {
+  createXmemoryMemoryEngine,
+  DEFAULT_XMEMORY_EXTRACTION_LOGIC,
+  DEFAULT_XMEMORY_RECALL_TOKENS,
+  DEFAULT_XMEMORY_TIMEOUT_MS,
+  MissingCredentialError,
+  XMEMORY_DUMP_QUERY,
+  XMEMORY_INSTANCE_PREFIX,
+  XMEMORY_SCHEMA_YML,
+  XMEMORY_SHARED_SCOPE,
+  XmemoryMemoryEngine,
+} from './xmemory.ts';
+export type {
+  XmemoryClient,
+  XmemoryExtractionLogic,
+  XmemoryMemoryOptions,
+  XmemoryReadResult,
+  XmemoryWriteResult,
+} from './xmemory.ts';
 export { estimateTokens, factTokens, jaccardSimilarity, stem, tokenOverlap } from './text.ts';

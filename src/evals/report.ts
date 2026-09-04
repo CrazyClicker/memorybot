@@ -573,6 +573,15 @@ export function renderReport(model: ReportModel): string {
           'with the scenario clock; dropped technical facts remain observable engine behaviour.',
         ]
       : []),
+    ...(model.configs.some((config) => config.memory?.engine === 'xmemory')
+      ? [
+          '',
+          '**xmemory caveat.** Hosted xmemory uses wall-clock accounting and does not return token',
+          'usage. The adapter uses fast extraction, one temporary instance per customer plus a',
+          'shared instance, and deterministic dump-and-local-rank recall. Operation counts and',
+          'trace/console links are recorded in each run result but excluded from the USD column.',
+        ]
+      : []),
     '',
     '## Configs',
     '',

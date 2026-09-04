@@ -256,6 +256,16 @@ while items exposed through the engine interface carry the scenario clock. Custo
 use the customer id as `userId`, and product-scoped coach notes use the reserved `_shared` user.
 Mem0's operational telemetry is disabled by default; set `MEM0_TELEMETRY=true` to opt in.
 
+The hosted `xmemory` adapter creates one temporary instance per customer scope and a separate
+`_shared` instance for product-scoped coach notes. Writes are synchronous and default to `fast`
+extraction. Recall asks each existing relevant instance for a fixed all-fields dump, then applies
+the same local token-overlap ranking and token cap as `notes`; the reader is a structured query
+engine, not a similarity search. `reset()` deletes temporary `prilavok-*` instances, including
+orphans from an interrupted run. xmemory does not return token usage, so result JSON records API
+operation counts and every available trace id / console URL while the report's USD total excludes
+that spend. Set `XMEMORY_CLUSTER_ID` when the account exposes more than one cluster, and optionally
+override `XMEMORY_API_URL` or `XMEMORY_EXTRACTION_LOGIC=deep`.
+
 The engine adapter (`src/memory/engine.ts`): `reset()`, `recall(customer, query, now)`,
 `write(items, now)`, `consolidate(thread, now)`, optional `proposals()`, optional `usage()` for
 an engine whose own LLM calls are visible (the `notes` extractor), charged to the run's cost at

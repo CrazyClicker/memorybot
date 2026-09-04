@@ -8,10 +8,12 @@ import {
   createNaiveMemoryEngine,
   createNoneMemoryEngine,
   createNotesMemoryEngine,
+  createXmemoryMemoryEngine,
   dateStatement,
   type MemoryEngine,
   type MemoryItem,
   type Mem0Client,
+  type XmemoryClient,
   type ThreadEvent,
   type ThreadTranscript,
 } from '../memory/index.ts';
@@ -69,6 +71,8 @@ export interface CreateMemoryEngineOptions {
   readonly model?: LanguageModel;
   /** Direct client injection keeps factory-level mem0 tests offline. */
   readonly mem0Client?: Mem0Client;
+  /** Direct client injection keeps factory-level xmemory tests offline. */
+  readonly xmemoryClient?: XmemoryClient;
 }
 
 /** Build an engine from the complete config because structured extraction uses its agent model. */
@@ -93,7 +97,7 @@ export function createMemoryEngine(
       });
     }
     case 'xmemory':
-      throw new Error(`Memory engine "${config.memory.engine}" is not implemented yet`);
+      return createXmemoryMemoryEngine({ client: options.xmemoryClient });
   }
 }
 
@@ -140,10 +144,31 @@ export async function runScenario(
     }
     await executeProbes(scenario, options.engine, state, judge);
   } catch (error) {
-    return result(state, scenario, config, repeat, startedAt, wallTime(wallClock), judge, options.cached, errorMessage(error));
+    return result(
+      state,
+      scenario,
+      config,
+      repeat,
+      startedAt,
+      wallTime(wallClock),
+      judge,
+      options.engine,
+      options.cached,
+      errorMessage(error),
+    );
   }
 
-  return result(state, scenario, config, repeat, startedAt, wallTime(wallClock), judge, options.cached);
+  return result(
+    state,
+    scenario,
+    config,
+    repeat,
+    startedAt,
+    wallTime(wallClock),
+    judge,
+    options.engine,
+    options.cached,
+  );
 }
 
 /** Sequential repeats deliberately reuse the adapter: `reset()` must prove each run is fresh. */
@@ -426,9 +451,11 @@ function result(
   startedAt: string,
   finishedAt: string,
   judge: Judge,
+  engine: MemoryEngine,
   cached?: boolean,
   error?: string,
 ): RunResult {
+  const memoryDiagnostics = engine.diagnostics?.();
   return {
     scenario: scenario.id,
     config: config.id,
@@ -442,6 +469,14 @@ function result(
     score: scoreOf(allChecks(state)),
     costUsd: state.costUsd,
     ...(cached === undefined ? {} : { cached }),
+    ...(memoryDiagnostics === undefined
+      ? {}
+      : {
+          memoryDiagnostics: {
+            calls: { ...memoryDiagnostics.calls },
+            traces: memoryDiagnostics.traces.map((trace) => ({ ...trace })),
+          },
+        }),
     ...(error === undefined ? {} : { error }),
   };
 }

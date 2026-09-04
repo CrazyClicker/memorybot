@@ -441,6 +441,24 @@ export const ScoreSchema = z.strictObject({
 });
 export type Score = z.infer<typeof ScoreSchema>;
 
+export const MemoryEngineTraceSchema = z.strictObject({
+  operation: z.enum(['create', 'read', 'write', 'delete']),
+  scope: z.string().optional(),
+  instanceId: z.string().optional(),
+  traceId: z.string().optional(),
+  consoleUrl: z.string().optional(),
+});
+
+export const MemoryEngineDiagnosticsSchema = z.strictObject({
+  calls: z.strictObject({
+    creates: count,
+    reads: count,
+    writes: count,
+    deletes: count,
+  }),
+  traces: z.array(MemoryEngineTraceSchema),
+});
+
 /** One scenario × one config × one repeat: `evals/results/<run-id>/<scenario>.<config>.<repeat>.json`. */
 export const RunResultSchema = z.strictObject({
   scenario: IdSchema,
@@ -459,6 +477,8 @@ export const RunResultSchema = z.strictObject({
   costUsd: z.number().min(0),
   /** True when the LLM disk cache was on: identical calls replayed, so repeats are not samples. */
   cached: z.boolean().optional(),
+  /** Hosted-engine operations whose token usage is not present in API responses. */
+  memoryDiagnostics: MemoryEngineDiagnosticsSchema.optional(),
   /** Set when the run stopped early; the steps before the failure are still recorded. */
   error: z.string().optional(),
 });

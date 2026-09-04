@@ -26,6 +26,9 @@ importers:
       minisearch:
         specifier: ^7.2.0
         version: 7.2.0
+      xmemory:
+        specifier: ^3.8.3
+        version: 3.8.3
       yaml:
         specifier: ^2.8.0
         version: 2.9.0
@@ -1552,6 +1555,9 @@ packages:
   wrappy@1.0.2:
     resolution: {integrity: sha512-l4Sp/DRseor9wL6EvV2+TuQn63dMkPjZ/sp9XkghTEbV9KlPS1xUsZ3u7/IQO4wxtcFB4bgpQPRcR3QCvezPcQ==}
 
+  xmemory@3.8.3:
+    resolution: {integrity: sha512-rCIg3hlNGfn5sJo67OiFL9Wp0iwvJA8vSv50a+uYMpTLpQ1EHbpfijatqEBItzfIALf71iK2y5UBvKvOasm8zg==}
+
   xtend@4.0.2:
     resolution: {integrity: sha512-LKYU1iAXJXUgAXn9URjiu+MWhyUXHsvfp7mcuYm9dSUKK0/CjtrUwFAxD82/mCWbtLsGjFIad0wIsod4zrTAEQ==}
     engines: {node: '>=0.4'}
@@ -2840,6 +2846,8 @@ snapshots:
   wordnet-db@3.1.14: {}
 
   wrappy@1.0.2: {}
+
+  xmemory@3.8.3: {}
 
   xtend@4.0.2: {}
 

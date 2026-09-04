@@ -43,12 +43,34 @@ export interface MemoryEngine {
   proposals?(): Promise<MemoryItem[]>;
   /** Cumulative observable engine-side LLM use since reset; hosted adapters may omit this. */
   usage?(): MemoryEngineUsage;
+  /** Hosted adapters expose operation counts and trace links instead of token usage. */
+  diagnostics?(): MemoryEngineDiagnostics;
+  /** Release per-run remote resources; unlike reset, this targets only resources this object owns. */
+  cleanup?(): Promise<void>;
 }
 
 export interface MemoryEngineUsage {
   readonly usage: TokenUsage;
   /** Absent when the extraction model has no catalogue price. */
   readonly costUsd?: number;
+}
+
+export interface MemoryEngineTrace {
+  readonly operation: 'create' | 'read' | 'write' | 'delete';
+  readonly scope?: string;
+  readonly instanceId?: string;
+  readonly traceId?: string;
+  readonly consoleUrl?: string;
+}
+
+export interface MemoryEngineDiagnostics {
+  readonly calls: {
+    readonly creates: number;
+    readonly reads: number;
+    readonly writes: number;
+    readonly deletes: number;
+  };
+  readonly traces: readonly MemoryEngineTrace[];
 }
 
 /** Runtime check used by engine implementations and later by the runner. */

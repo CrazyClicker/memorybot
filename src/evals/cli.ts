@@ -9,7 +9,7 @@ import { cacheDirFrom } from '../llm/index.ts';
 import { cachedRepeatsProblem, CliError, type CommandName, COMMANDS, parseCli } from './args.ts';
 import { createJudge, type Judge, resolveJudgeSpec } from './judge.ts';
 import { CONFIGS_DIR, listYamlFiles, type LoadedFile, SCENARIOS_DIR, validateFiles } from './load.ts';
-import type { MemoryEngine } from '../memory/index.ts';
+import { MissingCredentialError, type MemoryEngine } from '../memory/index.ts';
 import {
   buildReport,
   latestRunId,
@@ -209,6 +209,7 @@ const run: Command = async (values) => {
   // Build every engine and judge up front: a missing API key or an unimplemented engine
   // must stop the run before the first paid agent call, not half-way through the matrix.
   const runtimes = new Map<string, { engine: MemoryEngine; judge: Judge }>();
+  const skippedConfigs = new Set<string>();
   for (const config of configs) {
     const { spec, warning } = resolveJudgeSpec(config.judge);
     if (warning !== undefined) process.stderr.write(`Config "${config.id}": ${warning}\n`);
@@ -218,6 +219,13 @@ const run: Command = async (values) => {
         judge: createJudge(spec),
       });
     } catch (error) {
+      if (error instanceof MissingCredentialError) {
+        skippedConfigs.add(config.id);
+        process.stderr.write(
+          `skipped  Config "${config.id}": ${error.message}; no paid calls were made.\n`,
+        );
+        continue;
+      }
       const message = error instanceof Error ? error.message : String(error);
       throw new CliError(`Config "${config.id}" cannot run: ${message}`);
     }
@@ -231,18 +239,23 @@ const run: Command = async (values) => {
   for (const scenario of scenarios) {
     for (const config of configs) {
       const runtime = runtimes.get(config.id);
+      if (runtime === undefined && skippedConfigs.has(config.id)) continue;
       if (runtime === undefined) throw new Error(`No runtime built for config "${config.id}"`);
-      const results = await runScenarioRepeats(scenario, config, selection.repeat, { ...runtime, cached });
-      for (const result of results) {
-        const parsed = RunResultSchema.parse(result);
-        const path = join(outputDir, `${scenario.id}.${config.id}.${result.repeat}.json`);
-        await writeFile(path, `${JSON.stringify(parsed, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
-        process.stdout.write(`${result.error === undefined ? 'ok  ' : 'FAIL'}  ${path}\n`);
-        if (result.error !== undefined) {
-          process.stderr.write(`      ${result.error}\n`);
-          failed += 1;
+      try {
+        const results = await runScenarioRepeats(scenario, config, selection.repeat, { ...runtime, cached });
+        for (const result of results) {
+          const parsed = RunResultSchema.parse(result);
+          const path = join(outputDir, `${scenario.id}.${config.id}.${result.repeat}.json`);
+          await writeFile(path, `${JSON.stringify(parsed, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
+          process.stdout.write(`${result.error === undefined ? 'ok  ' : 'FAIL'}  ${path}\n`);
+          if (result.error !== undefined) {
+            process.stderr.write(`      ${result.error}\n`);
+            failed += 1;
+          }
+          written += 1;
         }
-        written += 1;
+      } finally {
+        await runtime.engine.cleanup?.();
       }
     }
   }
