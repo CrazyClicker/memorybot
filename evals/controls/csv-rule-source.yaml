@@ -1,0 +1,202 @@
+# Opt-in source control: run with evals/configs/none.yaml, outside --all.
+# Questions, expectations and source text must match the main CSV scenario; tests enforce parity.
+id: csv-rule-source
+title: CSV rule source control — all three decisions with the original explanation in each fresh thread
+tags:
+  - control
+  - source-context
+  - semantic-fidelity
+  - opt-in
+hypotheses:
+  - id: source-rule-understanding
+    claim: The support agent can apply every branch of the conditional CSV rule when given the
+      uncompressed engineer explanation.
+    comparison: Use the none config with the same agent model, actual judge, wiki and revision as
+      csv-import-dropped-rows; pair steps by identical branch ids. The original explanation is
+      supplied in the current thread, not in memory.
+    decision_rule: All three branch rubrics must pass. A failing source branch blocks a memory-loss
+      conclusion for its paired memory question. This is a reasoning/control prerequisite, not
+      evidence that memory learned anything; do not pool its scores into memory-engine rankings.
+    evidence:
+      - owner: branch-sku-agent
+        key: reply.rubric
+      - owner: branch-name-agent
+        key: reply.rubric
+      - owner: branch-new-agent
+        key: reply.rubric
+world:
+  knowledge_base: wiki
+  clock: 2026-08-26T09:00:00Z
+  customers:
+    dom_i_sad:
+      name: Дом и сад
+      profile: "Магазин товаров для дома, тариф «Бизнес», около 1 200 товаров. Контактное лицо: Марина,
+        менеджер по ассортименту."
+    velo_dvor:
+      name: ВелоДвор
+      profile: Магазин велозапчастей, тариф «Старт», около 400 товаров.
+knowledge: {}
+steps:
+  - id: branch-sku-context
+    type: customer_message
+    thread: tkt_dom_i_sad_branch_sku
+    customer: dom_i_sad
+    at: 2026-09-01T09:00:00Z
+    content: «Дом и сад». Хотим уточнить правило работы импортёра перед новой загрузкой. Текущих проблем
+      с данными нет.
+  - id: branch-sku-source
+    type: coach_note
+    thread: tkt_dom_i_sad_branch_sku
+    author: eng.oleg
+    at: 2026-09-01T09:00:00Z
+    scope: customer
+    note: Exact original engineer explanation, copied from csv-import-dropped-rows/t1-coach-note. This
+      is direct source context; no consolidation or wiki_update occurs.
+    content: |
+      Разобрался. Файл начинается с BOM (EF BB BF), поэтому заголовок первой
+      колонки читается как «[BOM]sku» и колонка sku не распознаётся.
+      В версии до релиза 10 сентября правило такое: в режиме «Только новые»,
+      если заголовок sku распознан, строка с уже существующим артикулом
+      не обновляет товар. Но когда BOM ломает распознавание заголовка sku,
+      импортёр переходит к сопоставлению по названию и игнорирует режим
+      «Только новые». Если название совпало, существующий товар обновляется,
+      включая цену. Если совпадения названия нет, строка пропускается молча:
+      новый товар не создаётся, строка не попадает в отчёт и не считается ошибкой.
+      Поэтому у вас существующие товары обновились, а 37 новых строк
+      импортёр молча пропустил. Это баг импортёра, не файла. Загрузил 37 позиций вручную.
+      Для «Дом и сад»: до релиза пусть сохраняют экспорт из «СкладУчёт» как
+      «UTF-8 без BOM», это есть в диалоге экспорта. Фикс импортёра (удаление
+      BOM плюс пропущенные строки в отчёте) выходит в релизе 10 сентября.
+      Про BOM стоит добавить в статью про импорт.
+  - id: branch-sku-open
+    type: customer_message
+    thread: tkt_dom_i_sad_branch_sku
+    customer: dom_i_sad
+    at: 2026-09-01T09:00:00Z
+    content: |
+      «Дом и сад». Уточняем поведение версии импортёра до релиза 10 сентября,
+      пока ничего не загружаем. Выбран режим «Только новые». Заголовок sku
+      распознан, артикул строки уже есть в магазине, в файле указана другая
+      цена. Обновится ли цена существующего товара? Почему?
+  - id: branch-sku-agent
+    type: agent_turn
+    thread: tkt_dom_i_sad_branch_sku
+    expect:
+      outcome: answer
+      reply:
+        rubric: "Pass: explicitly says the existing product and its price will not be updated, because with
+          a recognised sku header the Only new mode excludes rows whose sku already exists. The
+          reply may refer to the conditions already stated in the question; it need not restate them
+          or the unasked exception. Partial: gives the correct decision with no explanation, or
+          hedges it. Fail: predicts an update, applies the title fallback despite the recognised
+          header, or asks for the rule again."
+  - id: branch-name-context
+    type: customer_message
+    thread: tkt_dom_i_sad_branch_name
+    customer: dom_i_sad
+    at: 2026-09-01T09:10:00Z
+    content: «Дом и сад». Хотим уточнить правило работы импортёра перед новой загрузкой. Текущих проблем
+      с данными нет.
+  - id: branch-name-source
+    type: coach_note
+    thread: tkt_dom_i_sad_branch_name
+    author: eng.oleg
+    at: 2026-09-01T09:10:00Z
+    scope: customer
+    note: Exact original engineer explanation, copied from csv-import-dropped-rows/t1-coach-note. This
+      is direct source context; no consolidation or wiki_update occurs.
+    content: |
+      Разобрался. Файл начинается с BOM (EF BB BF), поэтому заголовок первой
+      колонки читается как «[BOM]sku» и колонка sku не распознаётся.
+      В версии до релиза 10 сентября правило такое: в режиме «Только новые»,
+      если заголовок sku распознан, строка с уже существующим артикулом
+      не обновляет товар. Но когда BOM ломает распознавание заголовка sku,
+      импортёр переходит к сопоставлению по названию и игнорирует режим
+      «Только новые». Если название совпало, существующий товар обновляется,
+      включая цену. Если совпадения названия нет, строка пропускается молча:
+      новый товар не создаётся, строка не попадает в отчёт и не считается ошибкой.
+      Поэтому у вас существующие товары обновились, а 37 новых строк
+      импортёр молча пропустил. Это баг импортёра, не файла. Загрузил 37 позиций вручную.
+      Для «Дом и сад»: до релиза пусть сохраняют экспорт из «СкладУчёт» как
+      «UTF-8 без BOM», это есть в диалоге экспорта. Фикс импортёра (удаление
+      BOM плюс пропущенные строки в отчёте) выходит в релизе 10 сентября.
+      Про BOM стоит добавить в статью про импорт.
+  - id: branch-name-open
+    type: customer_message
+    thread: tkt_dom_i_sad_branch_name
+    customer: dom_i_sad
+    at: 2026-09-01T09:10:00Z
+    content: |
+      «Дом и сад». Уточняем поведение версии импортёра до релиза 10 сентября,
+      пока ничего не загружаем. Выбран режим «Только новые», но из-за BOM
+      заголовок sku не распознан. Название строки совпадает с существующим
+      товаром, в файле указана другая цена. Обновится ли цена существующего
+      товара при выбранном режиме? Почему?
+  - id: branch-name-agent
+    type: agent_turn
+    thread: tkt_dom_i_sad_branch_name
+    expect:
+      outcome: answer
+      reply:
+        rubric: "Pass: explicitly says the existing product's price WILL be updated: when BOM prevents
+          recognition of the sku header, the importer ignores Only new mode, matches by title and
+          updates the existing product, including its price. Partial: warns that the price may
+          change without asserting this branch or explaining the ignored mode and title fallback.
+          Fail: promises protection because of Only new mode, says every unrecognised-sku row is
+          skipped, predicts a duplicate new product, or substitutes advice to remove BOM for the
+          requested answer."
+  - id: branch-new-context
+    type: customer_message
+    thread: tkt_dom_i_sad_branch_new
+    customer: dom_i_sad
+    at: 2026-09-01T09:20:00Z
+    content: «Дом и сад». Хотим уточнить правило работы импортёра перед новой загрузкой. Текущих проблем
+      с данными нет.
+  - id: branch-new-source
+    type: coach_note
+    thread: tkt_dom_i_sad_branch_new
+    author: eng.oleg
+    at: 2026-09-01T09:20:00Z
+    scope: customer
+    note: Exact original engineer explanation, copied from csv-import-dropped-rows/t1-coach-note. This
+      is direct source context; no consolidation or wiki_update occurs.
+    content: |
+      Разобрался. Файл начинается с BOM (EF BB BF), поэтому заголовок первой
+      колонки читается как «[BOM]sku» и колонка sku не распознаётся.
+      В версии до релиза 10 сентября правило такое: в режиме «Только новые»,
+      если заголовок sku распознан, строка с уже существующим артикулом
+      не обновляет товар. Но когда BOM ломает распознавание заголовка sku,
+      импортёр переходит к сопоставлению по названию и игнорирует режим
+      «Только новые». Если название совпало, существующий товар обновляется,
+      включая цену. Если совпадения названия нет, строка пропускается молча:
+      новый товар не создаётся, строка не попадает в отчёт и не считается ошибкой.
+      Поэтому у вас существующие товары обновились, а 37 новых строк
+      импортёр молча пропустил. Это баг импортёра, не файла. Загрузил 37 позиций вручную.
+      Для «Дом и сад»: до релиза пусть сохраняют экспорт из «СкладУчёт» как
+      «UTF-8 без BOM», это есть в диалоге экспорта. Фикс импортёра (удаление
+      BOM плюс пропущенные строки в отчёте) выходит в релизе 10 сентября.
+      Про BOM стоит добавить в статью про импорт.
+  - id: branch-new-open
+    type: customer_message
+    thread: tkt_dom_i_sad_branch_new
+    customer: dom_i_sad
+    at: 2026-09-01T09:20:00Z
+    content: |
+      «Дом и сад». Уточняем поведение версии импортёра до релиза 10 сентября,
+      пока ничего не загружаем. Выбран режим «Только новые», но из-за BOM
+      заголовок sku не распознан. Товара с названием этой строки в магазине
+      ещё нет. Создастся ли новый товар и будет ли эта строка видна в отчёте
+      об импорте? Почему?
+  - id: branch-new-agent
+    type: agent_turn
+    thread: tkt_dom_i_sad_branch_new
+    expect:
+      outcome: answer
+      reply:
+        rubric: "Pass: explicitly says no product is created and the row is silently skipped without an
+          error or a row in the report, because the unrecognised sku header forces title matching
+          and there is no title match. Partial: says skipped without clarifying the missing error
+          and report entry, or gives the result without the conditional mechanism. Fail: predicts
+          creation because Only new mode is selected, invents a match, predicts an ordinary
+          validation error in the report, or only recommends correcting the file instead of
+          answering the case."

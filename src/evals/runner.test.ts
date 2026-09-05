@@ -315,6 +315,15 @@ describe('runScenario', () => {
       }),
     ]]);
     expect(result.steps[0]?.memoryWrites).toEqual(engine.writes[0]);
+    expect(result.definition?.scenario).toEqual(fullScenario());
+    expect(result.definition?.config).toEqual(config());
+    expect(result.steps[0]?.recalls?.[0]).toMatchObject({
+      via: 'hydrate', query: 'Первый вопрос.', returned: calls[0]?.input.memory,
+    });
+    expect(result.steps[1]?.recalls?.[0]?.returned.map((item) => item.id)).toEqual(['shared-memory']);
+    expect(result.steps[0]?.recalls?.[0]?.estimatedTokens).toBeGreaterThan(0);
+    expect(result.steps[0]?.responseLatencyMs).toBeGreaterThanOrEqual(10);
+    expect(result.steps[0]?.judgeCostUsd).toBe(0);
 
     expect(engine.consolidations.map(({ id }) => id)).toEqual(['alpha-thread', 'beta-thread']);
     expect(engine.consolidations[0]?.events.map(({ type }) => type)).toEqual([
@@ -341,6 +350,26 @@ describe('runScenario', () => {
       { key: 'proposes:K1', verdict: 'skipped', why: expect.stringContaining('no judge') },
     ]);
     expect(sourceWiki.readPage('help')).not.toContain('Новая подтверждённая инструкция.');
+  });
+
+  it('records tool-only recall without double counting its time, and snapshots the scoped payload', async () => {
+    const result = await runScenario(fullScenario(), config({ read: 'tool' }), {
+      engine: new RecordingEngine(), wiki: wiki(),
+      runAgent: async (input, options) => {
+        expect(input.memory).toEqual([]);
+        const returned = await options!.recallMemory!(input.customer.id, 'A reformulated query', input.now);
+        // Consumers may mutate their copy; the observation must retain what was returned.
+        returned[0]!.statement = 'Mutated after recall';
+        return turn({ latencyMs: 123 });
+      },
+    });
+    expect(result.error).toBeUndefined();
+    const beta = result.steps[1]!;
+    expect(beta.recalls).toHaveLength(1);
+    expect(beta.recalls![0]).toMatchObject({ via: 'tool', query: 'A reformulated query' });
+    expect(beta.recalls![0]!.returned.map((item) => item.id)).toEqual(['shared-memory']);
+    expect(beta.recalls![0]!.returned[0]!.statement).not.toBe('Mutated after recall');
+    expect(beta.responseLatencyMs).toBe(123);
   });
 
   it('gives write: agent only new coach notes at consolidation boundaries', async () => {

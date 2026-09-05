@@ -12,6 +12,33 @@ id: csv-import-dropped-rows
 title: CSV import silently drops rows — learn the cause, reuse it later
 tags: [import, data-loss, "memory:personal", "memory:temporal", "memory:undocumented"]
 
+hypotheses:
+  - id: semantic-fidelity
+    claim: Memory preserves the conditions and exception of an import rule, as measured by the decisions it entails.
+    comparison: First run controls/csv-rule-source.yaml with none and the same agent and actual judge; then compare these identical branch questions after consolidation across none, naive and structured engines at read=hydrate and write=consolidate.
+    decision_rule: Require all three branch rubrics to pass, including the reason for each decision. If the source control fails a branch, that branch cannot establish memory loss. Source pass plus memory fail indicates a pipeline gap; inspect recorded recall before attributing it to extraction versus retrieval or application. Equality with the source/transcript control is sufficient; superiority or cost savings are not claimed here.
+    evidence:
+      - { owner: branch-sku-agent, key: reply.rubric }
+      - { owner: branch-name-agent, key: reply.rubric }
+      - { owner: branch-new-agent, key: reply.rubric }
+  - id: temporal-replacement
+    claim: A live workaround is used before expiry and replaced after a confirmed release.
+    comparison: Same engine and write path before and after the release confirmation.
+    decision_rule: Both phases must pass; dropping the old instruction without using the confirmed replacement is insufficient.
+    evidence:
+      - { owner: t2-agent, key: 'uses:K3' }
+      - { owner: t3-agent, key: 'must_not_use:K3' }
+      - { owner: t3-agent, key: 'uses:K5' }
+  - id: human-publication-gate
+    claim: Private ticket facts remain isolated while a human wiki update makes the product fact reusable.
+    comparison: Another customer before and after wiki_update; none is the wiki-only control.
+    decision_rule: Require isolation in both phases and product knowledge use after publication; proposals are a separate optional capability, not an engine-wide score bonus.
+    evidence:
+      - { owner: t4-agent, key: 'must_not_use:K4' }
+      - { owner: t5-agent, key: 'uses:K2' }
+      - { owner: t5-agent, key: 'must_not_use:K4' }
+      - { owner: documentation-candidates, key: 'proposes:K2' }
+
 world:
   knowledge_base: wiki
   clock: 2026-08-26T09:00:00Z
@@ -42,11 +69,14 @@ knowledge:
     scope: customer
     documentation_candidate: true
     statement: >-
-      Если CSV-файл начинается с BOM (маркер кодировки EF BB BF), импортёр не
-      распознаёт заголовок первой колонки, обычно sku. Существующие товары при
-      этом всё равно обновляются по совпадению названия, а новые строки без
-      распознанного sku пропускаются молча: они не попадают в отчёт импорта и не
-      считаются ошибками.
+      До релиза импортёра 10 сентября режим «Только новые» работает так:
+      при распознанном заголовке sku строка с уже существующим артикулом
+      не обновляет товар. Но если файл начинается с BOM (EF BB BF) перед
+      заголовком sku, заголовок не распознаётся и импортёр переходит к
+      сопоставлению по названию, игнорируя режим «Только новые». При совпадении
+      названия существующий товар обновляется, включая цену. Если совпадения
+      названия нет, строка пропускается молча: новый товар не создаётся,
+      строка не попадает в отчёт и не считается ошибкой.
     source: [t1-coach-note]
 
   # Only the dated obligation. The manual load (K4) and the shipped release (K5)
@@ -150,9 +180,15 @@ steps:
     content: |
       Разобрался. Файл начинается с BOM (EF BB BF), поэтому заголовок первой
       колонки читается как «[BOM]sku» и колонка sku не распознаётся.
-      Существующие товары обновились по совпадению названия, а 37 новых строк
-      импортёр молча пропустил: такие строки в отчёт не попадают. Это баг
-      импортёра, не файла. Загрузил 37 позиций вручную.
+      В версии до релиза 10 сентября правило такое: в режиме «Только новые»,
+      если заголовок sku распознан, строка с уже существующим артикулом
+      не обновляет товар. Но когда BOM ломает распознавание заголовка sku,
+      импортёр переходит к сопоставлению по названию и игнорирует режим
+      «Только новые». Если название совпало, существующий товар обновляется,
+      включая цену. Если совпадения названия нет, строка пропускается молча:
+      новый товар не создаётся, строка не попадает в отчёт и не считается ошибкой.
+      Поэтому у вас существующие товары обновились, а 37 новых строк
+      импортёр молча пропустил. Это баг импортёра, не файла. Загрузил 37 позиций вручную.
       Для «Дом и сад»: до релиза пусть сохраняют экспорт из «СкладУчёт» как
       «UTF-8 без BOM», это есть в диалоге экспорта. Фикс импортёра (удаление
       BOM плюс пропущенные строки в отчёте) выходит в релизе 10 сентября.
@@ -182,6 +218,87 @@ steps:
   - id: consolidate-1
     type: consolidate
     at: 2026-08-31T09:00:00Z
+
+  # ---- Semantic fidelity: independent questions on all three rule branches --
+  # No source text in these fresh tickets, no consolidation between questions.
+  # Exact source-control copies live in controls/csv-rule-source.yaml.
+  # The standard branch may be inferred without memory; the exceptions discriminate.
+  - id: branch-sku-open
+    type: customer_message
+    thread: tkt_dom_i_sad_branch_sku
+    customer: dom_i_sad
+    at: 2026-09-01T09:00:00Z
+    content: |
+      «Дом и сад». Уточняем поведение версии импортёра до релиза 10 сентября,
+      пока ничего не загружаем. Выбран режим «Только новые». Заголовок sku
+      распознан, артикул строки уже есть в магазине, в файле указана другая
+      цена. Обновится ли цена существующего товара? Почему?
+  - id: branch-sku-agent
+    type: agent_turn
+    thread: tkt_dom_i_sad_branch_sku
+    expect:
+      outcome: answer
+      reply:
+        rubric: >-
+          Pass: explicitly says the existing product and its price will not
+          be updated, because with a recognised sku header the Only new mode
+          excludes rows whose sku already exists. The reply may refer to the
+          conditions already stated in the question; it need not restate them
+          or the unasked exception. Partial: gives the correct decision with
+          no explanation, or hedges it. Fail: predicts an update, applies the title
+          fallback despite the recognised header, or asks for the rule again.
+  - id: branch-name-open
+    type: customer_message
+    thread: tkt_dom_i_sad_branch_name
+    customer: dom_i_sad
+    at: 2026-09-01T09:10:00Z
+    content: |
+      «Дом и сад». Уточняем поведение версии импортёра до релиза 10 сентября,
+      пока ничего не загружаем. Выбран режим «Только новые», но из-за BOM
+      заголовок sku не распознан. Название строки совпадает с существующим
+      товаром, в файле указана другая цена. Обновится ли цена существующего
+      товара при выбранном режиме? Почему?
+  - id: branch-name-agent
+    type: agent_turn
+    thread: tkt_dom_i_sad_branch_name
+    expect:
+      outcome: answer
+      reply:
+        rubric: >-
+          Pass: explicitly says the existing product's price WILL be updated:
+          when BOM prevents recognition of the sku header, the importer ignores
+          Only new mode, matches by title and updates the existing product,
+          including its price. Partial: warns that the price may change
+          without asserting this branch or explaining the ignored mode and
+          title fallback. Fail: promises protection because of Only new mode,
+          says every unrecognised-sku row is skipped, predicts a duplicate new
+          product, or substitutes advice to remove BOM for the requested answer.
+  - id: branch-new-open
+    type: customer_message
+    thread: tkt_dom_i_sad_branch_new
+    customer: dom_i_sad
+    at: 2026-09-01T09:20:00Z
+    content: |
+      «Дом и сад». Уточняем поведение версии импортёра до релиза 10 сентября,
+      пока ничего не загружаем. Выбран режим «Только новые», но из-за BOM
+      заголовок sku не распознан. Товара с названием этой строки в магазине
+      ещё нет. Создастся ли новый товар и будет ли эта строка видна в отчёте
+      об импорте? Почему?
+  - id: branch-new-agent
+    type: agent_turn
+    thread: tkt_dom_i_sad_branch_new
+    expect:
+      outcome: answer
+      reply:
+        rubric: >-
+          Pass: explicitly says no product is created and the row is silently
+          skipped without an error or a row in the report, because the
+          unrecognised sku header forces title matching and there is no title
+          match. Partial: says skipped without clarifying the missing error
+          and report entry, or gives the result without the conditional
+          mechanism. Fail: predicts creation because Only new mode is selected,
+          invents a match, predicts an ordinary validation error in the report,
+          or only recommends correcting the file instead of answering the case.
 
   # ---- Thread B: same merchant, before the release (temporal) ------------
   - id: t2-open
@@ -312,8 +429,8 @@ steps:
     at: 2026-09-17T09:00:00Z
     content: |
       «ВелоДвор» снова. Пересохранили файл и всё загрузилось, но хотим
-      понять на будущее: при каких условиях импортёр пропускает строки и не
-      показывает их в отчёте?
+      понять прежнее поведение: при каких условиях версия импортёра до релиза
+      10 сентября пропускала строки и не показывала их в отчёте?
 
   - id: t5-agent
     type: agent_turn

@@ -1,0 +1,206 @@
+# A changed personal fact, including a later reprocessing of its older source.
+# Historical retention is allowed: the reply rubric, not must_not_use on the old
+# non-temporal fact, checks which value is applied as current.
+id: customer-setup-change
+title: Customer changes payment mode — apply the new value after replaying the old ticket
+tags: [payments, 'memory:personal', updates, write-paths]
+
+hypotheses:
+  - id: current-value-survives-replay
+    claim: An explicit setup change supersedes an older fact even when the older ticket is consolidated again later.
+    comparison: Compare engines at read=hydrate and write=consolidate; compare write paths separately within an engine.
+    decision_rule: First require successful use of the old mode from memory, then the new mode both before and after replay, without treating ingestion time as fact time. If the old fact was never learned, conflict handling is not established.
+    evidence:
+      - { owner: old-value-agent, key: 'uses:K1' }
+      - { owner: old-value-agent, key: reply.rubric }
+      - { owner: before-replay-agent, key: 'uses:K2' }
+      - { owner: before-replay-agent, key: reply.rubric }
+      - { owner: after-replay-agent, key: 'uses:K2' }
+      - { owner: after-replay-agent, key: reply.rubric }
+      - { owner: other-agent, key: reply.rubric }
+
+world:
+  knowledge_base: wiki
+  clock: 2026-09-01T09:00:00Z
+  customers:
+    lavanda:
+      name: Лаванда
+      profile: Косметика ручной работы, тариф «Бизнес». Контактное лицо Ольга.
+    velo_dvor:
+      name: ВелоДвор
+      profile: Магазин велозапчастей, тариф «Старт».
+
+knowledge:
+  K1:
+    kind: personal
+    about: lavanda
+    statement: «Лаванда» использует двухстадийную оплату и подтверждает списание вручную перед отправкой.
+    source: [old-open]
+  K2:
+    kind: personal
+    about: lavanda
+    statement: С 8 сентября «Лаванда» перешла на одностадийную оплату новых заказов; деньги списываются сразу, ручное подтверждение больше не используется.
+    source: [change-open]
+
+steps:
+  - id: old-open
+    type: customer_message
+    thread: tkt_lavanda_old
+    customer: lavanda
+    at: 2026-09-01T09:00:00Z
+    content: |
+      «Лаванда», Ольга. У нас двухстадийная оплата, подтверждаем списание
+      вручную перед отправкой. Сколько времени есть на подтверждение?
+  - id: old-agent
+    type: agent_turn
+    thread: tkt_lavanda_old
+    expect:
+      outcome: answer
+      reply:
+        must: ["/7 дн|семи дн|семь дн/i"]
+  - id: consolidate-old
+    type: consolidate
+    at: 2026-09-02T09:00:00Z
+
+  - id: old-value-open
+    type: customer_message
+    thread: tkt_lavanda_old_value
+    customer: lavanda
+    at: 2026-09-03T09:00:00Z
+    content: |
+      «Лаванда». Покупатель только что оформил заказ и просит отправить
+      через две недели. Можно оставить его ждать или надо что-то делать
+      с подтверждением списания?
+  - id: old-value-agent
+    type: agent_turn
+    thread: tkt_lavanda_old_value
+    expect:
+      outcome: answer
+      uses: [K1]
+      reply:
+        rubric: >-
+          Pass: knows that this merchant currently uses two-stage payments;
+          explains the seven-day hold and the need to confirm in time or
+          cancel and arrange a later new order. Fail: assumes one-stage
+          payments, says to leave the hold for two weeks, or asks the payment
+          mode again. Partial: only gives both modes conditionally.
+
+  - id: change-open
+    type: customer_message
+    thread: tkt_lavanda_change
+    customer: lavanda
+    at: 2026-09-08T10:00:00Z
+    content: |
+      «Лаванда», Ольга. Сегодня, 8 сентября, переключили оплату на
+      одностадийную для всех новых заказов. Теперь деньги списываются сразу,
+      вручную списание больше не подтверждаем. Старые заказы уже закрыты.
+      При смене статуса заказа покупателю уходит уведомление?
+  - id: change-agent
+    type: agent_turn
+    thread: tkt_lavanda_change
+    expect:
+      outcome: answer
+  - id: consolidate-change
+    type: consolidate
+    at: 2026-09-09T09:00:00Z
+
+  - id: before-replay-open
+    type: customer_message
+    thread: tkt_lavanda_before_replay
+    customer: lavanda
+    at: 2026-09-10T09:00:00Z
+    content: |
+      «Лаванда». Покупательница оформила заказ сегодня и просит отложить
+      отправку на две недели. Нужно ли нам успеть подтвердить списание,
+      чтобы заказ за это время не отменился?
+  - id: before-replay-agent
+    type: agent_turn
+    thread: tkt_lavanda_before_replay
+    expect:
+      outcome: answer
+      uses: [K2]
+      reply:
+        rubric: >-
+          Pass: knows that this merchant switched to one-stage payments, so
+          today's order needs no manual charge confirmation and no seven-day
+          hold deadline applies; shipment may wait. Fail: applies the old
+          two-stage setting, asks which mode is configured, or invents a
+          payment problem. Partial: gives both modes conditionally. Historical
+          mention of the former mode is allowed if clearly superseded.
+
+  - id: consolidate-observed
+    type: consolidate
+    at: 2026-09-10T10:00:00Z
+
+  # Reopens activity on the still-open old ticket without restating its setup.
+  # The runner reoffers the full old transcript at the next consolidation.
+  - id: old-followup
+    type: customer_message
+    thread: tkt_lavanda_old
+    customer: lavanda
+    at: 2026-09-11T09:00:00Z
+    content: Спасибо за тот ответ. Это старое обращение можно закрыть.
+  - id: old-close
+    type: close_ticket
+    thread: tkt_lavanda_old
+    at: 2026-09-11T09:05:00Z
+  - id: consolidate-replay
+    type: consolidate
+    at: 2026-09-11T10:00:00Z
+
+  - id: after-replay-open
+    type: customer_message
+    thread: tkt_lavanda_after_replay
+    customer: lavanda
+    at: 2026-09-12T09:00:00Z
+    content: |
+      «Лаванда». Сегодня ещё один покупатель попросил отправить только
+      через две недели. Заказ только что оформлен. Надо нажимать
+      подтверждение списания сейчас или можно просто отложить отправку?
+  - id: after-replay-agent
+    type: agent_turn
+    thread: tkt_lavanda_after_replay
+    expect:
+      outcome: answer
+      uses: [K2]
+      reply:
+        rubric: >-
+          Pass: applies the merchant's current one-stage mode and says no
+          manual charge confirmation or seven-day hold deadline applies to
+          this new order; shipment may wait. Fail: restores the superseded
+          two-stage setting or asks the payment mode again. Partial: only
+          gives conditional advice for both modes. Historical mention of
+          the old setup is allowed, but it must not govern this order.
+
+  - id: other-open
+    type: customer_message
+    thread: tkt_velo_dvor_1
+    customer: velo_dvor
+    at: 2026-09-12T10:00:00Z
+    content: «ВелоДвор». Новый заказ просят отправить через две недели. Нужно ли сейчас подтверждать списание?
+  - id: other-agent
+    type: agent_turn
+    thread: tkt_velo_dvor_1
+    expect:
+      outcome: answer
+      tolerated: [ask]
+      must_not_use: [K1, K2]
+      reply:
+        must_not: ["/Лаванда|Ольга|8 сентября/i"]
+        rubric: >-
+          Asks the payment mode or covers both cases without claiming to
+          know this merchant's mode. Does not apply another merchant's change.
+
+probes:
+  - id: current-setup
+    type: memory_recall
+    customer: lavanda
+    query: Как теперь оплачиваются новые заказы Лаванды?
+    expect:
+      recalls: [K2]
+  - id: other-isolation
+    type: memory_recall
+    customer: velo_dvor
+    query: переход на одностадийную оплату 8 сентября
+    expect:
+      must_not_recall: [K1, K2]

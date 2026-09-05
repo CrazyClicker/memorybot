@@ -276,6 +276,16 @@ export type Probe = z.infer<typeof ProbeSchema>;
 export type ProbeType = Probe['type'];
 export type ProbeOf<T extends ProbeType> = Extract<Probe, { type: T }>;
 
+/** Preregistered evidence, never shown to the support agent or memory extractor. */
+export const HypothesisSchema = z.strictObject({
+  id: IdSchema,
+  claim: z.string().min(1),
+  comparison: z.string().min(1),
+  decision_rule: z.string().min(1),
+  evidence: z.array(z.strictObject({ owner: IdSchema, key: z.string().min(1) })).min(1),
+});
+export type Hypothesis = z.infer<typeof HypothesisSchema>;
+
 export const ScenarioSchema = z.strictObject({
   /** Matches the file name. */
   id: IdSchema,
@@ -285,6 +295,7 @@ export const ScenarioSchema = z.strictObject({
   knowledge: z.record(KnowledgeIdSchema, KnowledgeItemSchema),
   steps: z.array(StepSchema).min(1),
   probes: z.array(ProbeSchema).optional(),
+  hypotheses: z.array(HypothesisSchema).optional(),
 });
 export type Scenario = z.infer<typeof ScenarioSchema>;
 
@@ -385,6 +396,15 @@ export const TraceStepSchema = z.strictObject({
 });
 export type TraceStep = z.infer<typeof TraceStepSchema>;
 
+export const RecallObservationSchema = z.strictObject({
+  via: z.enum(['hydrate', 'tool']),
+  query: z.string(),
+  returned: z.array(MemoryItemSchema),
+  latencyMs: z.number().min(0),
+  /** UTF-8 bytes / 4 estimate, not the model's tokenizer. */
+  estimatedTokens: z.number().int().min(0),
+});
+
 export const StepResultSchema = z.strictObject({
   /** The `agent_turn` step id. */
   id: IdSchema,
@@ -404,6 +424,11 @@ export const StepResultSchema = z.strictObject({
   /** Undefined when the model has no price entry. */
   costUsd: z.number().min(0).optional(),
   latencyMs: z.number().min(0),
+  /** Optional for backwards compatibility; [] means no recall, absent means unrecorded. */
+  recalls: z.array(RecallObservationSchema).optional(),
+  /** Agent turn plus initial hydration, excluding judging and subsequent persistence. */
+  responseLatencyMs: z.number().min(0).optional(),
+  judgeCostUsd: z.number().min(0).optional(),
 });
 export type StepResult = z.infer<typeof StepResultSchema>;
 
@@ -429,6 +454,7 @@ export const ProbeResultSchema = z.strictObject({
   checks: z.array(CheckResultSchema),
   /** What `recall` or `proposals` returned; absent when the engine could not serve the probe. */
   returned: z.array(MemoryItemSchema).optional(),
+  judgeCostUsd: z.number().min(0).optional(),
 });
 export type ProbeResult = z.infer<typeof ProbeResultSchema>;
 
@@ -464,6 +490,8 @@ export const RunResultSchema = z.strictObject({
   scenario: IdSchema,
   config: IdSchema,
   repeat: z.number().int().min(1),
+  /** Definitions at execution time; reports prefer these over subsequently edited YAML. */
+  definition: z.strictObject({ scenario: ScenarioSchema, config: ConfigSchema }).optional(),
   /** Wall clock. */
   startedAt: TimestampSchema,
   /** The model that actually judged; absent when nothing did (D9 fallback makes these differ). */

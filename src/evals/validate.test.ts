@@ -83,6 +83,23 @@ function expectOnly(issues: readonly Issue[], path: string, message: RegExp): vo
   expect(issues[0]?.message).toMatch(message);
 }
 
+describe('hypothesis references', () => {
+  it('accepts declared checks and rejects nonexistent or duplicate evidence', () => {
+    const raw = fixture();
+    raw.hypotheses = [{
+      id: 'learning', claim: 'A later answer uses the learned fact.',
+      comparison: 'naive against none', decision_rule: 'Inspect the later use.',
+      evidence: [{ owner: 'a2-agent', key: 'uses:K1' }],
+    }];
+    expect(parseScenario(raw, CTX).issues.filter((issue) => issue.severity === 'error')).toEqual([]);
+    raw.hypotheses[0].evidence.push({ owner: 'a2-agent', key: 'uses:K1' });
+    raw.hypotheses[0].evidence.push({ owner: 'a2-agent', key: 'uses:K999' });
+    const issues = parseScenario(raw, CTX).issues;
+    expect(issues.some((issue) => issue.message.includes('duplicate evidence'))).toBe(true);
+    expect(issues.some((issue) => issue.message.includes('unknown expected check'))).toBe(true);
+  });
+});
+
 describe('validateScenario', () => {
   it('accepts the fixture without a single issue', () => {
     expect(issuesFor(() => {})).toEqual([]);

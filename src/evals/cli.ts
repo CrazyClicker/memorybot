@@ -2,8 +2,9 @@
 /** `pnpm eval <command>`. Unimplemented commands exit 2 and name their ROADMAP task. */
 import 'dotenv/config';
 
-import { mkdir, writeFile } from 'node:fs/promises';
+import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
+import { parse as parseYaml, stringify as stringifyYaml } from 'yaml';
 
 import { cacheDirFrom } from '../llm/index.ts';
 import { cachedRepeatsProblem, CliError, type CommandName, COMMANDS, parseCli } from './args.ts';
@@ -21,6 +22,9 @@ import {
 import { createMemoryEngine, runScenarioRepeats } from './runner.ts';
 import { RunResultSchema, type Config, type Scenario } from './schema.ts';
 import { hasErrors } from './validate.ts';
+import { suiteGroups, SUITE_PLAN_FILE, SuitePlanSchema, type RunGroup } from './suites.ts';
+import { renderSuiteReport } from './suite-report.ts';
+import { renderCampaignReport } from './campaign-report.ts';
 
 const EXIT_USAGE = 1;
 const EXIT_NOT_IMPLEMENTED = 2;
@@ -90,6 +94,8 @@ const validate: Command = async (values) => {
 };
 
 interface RunSelection {
+  readonly groups: readonly RunGroup[];
+  readonly suite?: string;
   readonly scenarioPaths: readonly string[];
   readonly configPaths: readonly string[];
   readonly repeat: number;
@@ -99,13 +105,14 @@ interface RunSelection {
 
 async function runSelection(values: Record<string, unknown>): Promise<RunSelection> {
   const all = values['all'] === true;
+  const suite = stringValue(values['suite']);
   const scenarios = stringList(values['scenario']);
   const configs = stringList(values['config']);
-  if (all && (scenarios.length > 0 || configs.length > 0)) {
-    throw new CliError('Use either --all or explicit --scenario and --config options, not both.');
+  if ((all && suite !== undefined) || ((all || suite !== undefined) && (scenarios.length > 0 || configs.length > 0))) {
+    throw new CliError('Use one selection: --suite, --all, or explicit --scenario and --config.');
   }
-  if (!all && (scenarios.length === 0 || configs.length === 0)) {
-    throw new CliError('Run needs --all, or at least one --scenario and one --config.');
+  if (!all && suite === undefined && (scenarios.length === 0 || configs.length === 0)) {
+    throw new CliError('Run needs --suite, --all, or at least one --scenario and one --config.');
   }
 
   const repeatText = stringValue(values['repeat']) ?? '1';
@@ -122,9 +129,17 @@ async function runSelection(values: Record<string, unknown>): Promise<RunSelecti
     throw new CliError('--run-id must use lowercase letters, digits, "-" and "_".');
   }
 
-  return {
+  const groups = suite !== undefined ? suiteGroups(suite) : [{
+    id: 'matrix',
+    purpose: all ? 'All core scenario files against all config files.' : 'Explicit scenario/config selection.',
     scenarioPaths: all ? await listYamlFiles(SCENARIOS_DIR) : scenarios,
     configPaths: all ? await listYamlFiles(CONFIGS_DIR) : configs,
+  }];
+  return {
+    groups,
+    suite,
+    scenarioPaths: [...new Set(groups.flatMap((group) => group.scenarioPaths))],
+    configPaths: [...new Set(groups.flatMap((group) => group.configPaths))],
     repeat,
     runId,
     all,
@@ -185,26 +200,70 @@ const run: Command = async (values) => {
 
   const scenarios = requiredValues(files.scenarios);
   const configs = requiredValues(files.configs);
+  const scenarioByPath = new Map(files.scenarios.map((file, index) => [file.path, scenarios[index]!]));
+  const configByPath = new Map(files.configs.map((file, index) => [file.path, configs[index]!]));
+  const groups = selection.groups.map((group) => ({
+    id: group.id,
+    purpose: group.purpose,
+    scenarios: group.scenarioPaths.map((path) => scenarioByPath.get(path)!),
+    configs: group.configPaths.map((path) => configByPath.get(path)!),
+  }));
 
-  const agentCalls = agentCallCount(scenarios, configs, selection.repeat);
-  const judgeCalls = judgeCallCount(scenarios, configs, selection.repeat);
+  const agentCalls = groups.reduce((count, group) => count + agentCallCount(group.scenarios, group.configs, selection.repeat), 0);
+  const judgeCalls = groups.reduce((count, group) => count + judgeCallCount(group.scenarios, group.configs, selection.repeat), 0);
+  const runCount = groups.reduce((count, group) => count + group.scenarios.length * group.configs.length * selection.repeat, 0);
   const cached = cacheDirFrom() !== undefined;
+  for (const group of groups) {
+    process.stdout.write(`\n${group.id}: ${group.purpose}\n` +
+      `  scenarios: ${group.scenarios.map((scenario) => scenario.id).join(', ')}\n` +
+      `  configs: ${group.configs.map((config) => config.id).join(', ')}\n`);
+  }
   process.stdout.write(
-    `\nPlan: ${scenarios.length} scenario(s) × ${configs.length} config(s) × ` +
-      `${selection.repeat} repeat(s), ${agentCalls} agent turn(s) and up to ` +
+    `\nPlan: ${runCount} scenario/config run(s), ${selection.repeat} repeat(s) per pair, ` +
+      `${agentCalls} agent turn(s) and up to ` +
       `${judgeCalls} judge call(s). A turn is a tool loop: several model calls. ` +
       `LLM cache: ${cached ? 'on (identical calls replay)' : 'off'}.\n`,
   );
+  if (values['dry-run'] === true) return;
   const cacheProblem = cachedRepeatsProblem({
     cached,
     repeat: selection.repeat,
     allowed: values['allow-cached-repeats'] === true,
   });
   if (cacheProblem !== undefined) throw new CliError(cacheProblem);
-  if (selection.all && values['yes'] !== true) {
-    process.stderr.write('Full-matrix runs require --yes after reviewing the call estimate.\n');
+  if ((selection.all || selection.suite !== undefined) && values['yes'] !== true) {
+    process.stderr.write('Suite and --all runs require --yes after reviewing the call estimate.\n');
     process.exitCode = EXIT_USAGE;
     return;
+  }
+  const outputDir = join(RESULTS_DIR, selection.runId);
+  // A suite owns its directory and plan. Refuse collisions before any paid calls.
+  if (selection.suite !== undefined) {
+    await mkdir(RESULTS_DIR, { recursive: true });
+    try {
+      await mkdir(outputDir);
+    } catch (error) {
+      throw new CliError(`Suite needs a fresh results directory: ${outputDir}: ${(error as Error).message}`);
+    }
+    const plan = SuitePlanSchema.parse({
+      version: 1,
+      suite: selection.suite,
+      repeat: selection.repeat,
+      groups: groups.map((group) => ({
+        id: group.id, purpose: group.purpose,
+        scenarios: group.scenarios.map((scenario) => scenario.id),
+        configs: group.configs.map((config) => config.id),
+      })),
+    });
+    await writeFile(join(outputDir, SUITE_PLAN_FILE), stringifyYaml(plan), { flag: 'wx' });
+  } else {
+    // Do not accidentally append a flat matrix to a suite directory.
+    try {
+      await access(join(outputDir, SUITE_PLAN_FILE));
+      throw new CliError(`Results directory belongs to a suite: ${outputDir}. Use a fresh --run-id.`);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
   }
   // Build every engine and judge up front: a missing API key or an unimplemented engine
   // must stop the run before the first paid agent call, not half-way through the matrix.
@@ -231,37 +290,42 @@ const run: Command = async (values) => {
     }
   }
 
-  const outputDir = join(RESULTS_DIR, selection.runId);
   await mkdir(outputDir, { recursive: true });
   let failed = 0;
   let written = 0;
 
-  for (const scenario of scenarios) {
-    for (const config of configs) {
-      const runtime = runtimes.get(config.id);
-      if (runtime === undefined && skippedConfigs.has(config.id)) continue;
-      if (runtime === undefined) throw new Error(`No runtime built for config "${config.id}"`);
-      try {
-        const results = await runScenarioRepeats(scenario, config, selection.repeat, { ...runtime, cached });
-        for (const result of results) {
-          const parsed = RunResultSchema.parse(result);
-          const path = join(outputDir, `${scenario.id}.${config.id}.${result.repeat}.json`);
-          await writeFile(path, `${JSON.stringify(parsed, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
-          process.stdout.write(`${result.error === undefined ? 'ok  ' : 'FAIL'}  ${path}\n`);
-          if (result.error !== undefined) {
-            process.stderr.write(`      ${result.error}\n`);
-            failed += 1;
+  for (const group of groups) {
+    const groupDir = selection.suite === undefined ? outputDir : join(outputDir, group.id);
+    await mkdir(groupDir, { recursive: true });
+    for (const scenario of group.scenarios) {
+      for (const config of group.configs) {
+        const runtime = runtimes.get(config.id);
+        if (runtime === undefined && skippedConfigs.has(config.id)) continue;
+        if (runtime === undefined) throw new Error(`No runtime built for config "${config.id}"`);
+        try {
+          const results = await runScenarioRepeats(scenario, config, selection.repeat, { ...runtime, cached });
+          for (const result of results) {
+            const parsed = RunResultSchema.parse(result);
+            const path = join(groupDir, `${scenario.id}.${config.id}.${result.repeat}.json`);
+            await writeFile(path, `${JSON.stringify(parsed, null, 2)}\n`, { encoding: 'utf8', flag: 'wx' });
+            process.stdout.write(`${result.error === undefined ? 'ok  ' : 'FAIL'}  ${path}\n`);
+            if (result.error !== undefined) {
+              process.stderr.write(`      ${result.error}\n`);
+              failed += 1;
+            }
+            written += 1;
           }
-          written += 1;
+        } finally {
+          await runtime.engine.cleanup?.();
         }
-      } finally {
-        await runtime.engine.cleanup?.();
       }
     }
   }
 
   process.stdout.write(`\n${written} result file(s) written to ${outputDir}.\n`);
-  process.exitCode = failed === 0 ? 0 : 1;
+  const incomplete = selection.suite !== undefined && written !== runCount;
+  if (incomplete) process.stderr.write(`Suite incomplete: ${written} / ${runCount} planned results written.\n`);
+  process.exitCode = failed === 0 && !incomplete ? 0 : 1;
 };
 
 function defaultRunId(): string {
@@ -278,7 +342,16 @@ function definedValues<T>(files: readonly LoadedFile<T>[]): T[] {
  * producible from a run directory whose sources have since been edited.
  */
 const report: Command = async (values) => {
-  const runId = stringValue(values['run']) ?? (await latestRunId());
+  const runIds = [...new Set(stringList(values['run']))];
+  if (runIds.length > 1) {
+    const markdown = await renderCampaignReport(runIds);
+    const outPath = stringValue(values['out']) ?? join(RESULTS_DIR, 'RESEARCH-REPORT.md');
+    await mkdir(dirname(outPath), { recursive: true });
+    await writeFile(outPath, markdown, 'utf8');
+    process.stdout.write(`${outPath}: research report from ${runIds.length} suite runs; core baselines reused for write paths.\n`);
+    return;
+  }
+  const runId = runIds[0] ?? (await latestRunId());
   if (runId === undefined) {
     process.stderr.write(`No runs under ${RESULTS_DIR}. Run \`pnpm eval run\` first.\n`);
     process.exitCode = EXIT_USAGE;
@@ -286,6 +359,22 @@ const report: Command = async (values) => {
   }
 
   const runDir = join(RESULTS_DIR, runId);
+  let suitePlan;
+  try {
+    suitePlan = SuitePlanSchema.parse(parseYaml(await readFile(join(runDir, SUITE_PLAN_FILE), 'utf8')));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw new CliError(`Cannot read suite plan in ${runDir}: ${(error as Error).message}`);
+    }
+  }
+  if (suitePlan !== undefined) {
+    const outPath = stringValue(values['out']) ?? join(runDir, 'REPORT.md');
+    const markdown = await renderSuiteReport(runId, runDir, suitePlan);
+    await mkdir(dirname(outPath), { recursive: true });
+    await writeFile(outPath, markdown, 'utf8');
+    process.stdout.write(`${outPath}: suite ${suitePlan.suite}, ${suitePlan.groups.length} separate comparisons.\n`);
+    return;
+  }
   let loaded;
   try {
     loaded = await loadRunResults(runDir);

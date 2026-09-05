@@ -1,6 +1,8 @@
 import type { LanguageModel } from 'ai';
 
 import { runTurn, type RunTurnOptions, type TurnInput, type TurnResult } from '../agent/index.ts';
+import { formatMemory } from '../agent/prompt.ts';
+import { estimateTokens } from '../memory/text.ts';
 import {
   canRecall,
   cloneMemoryItem,
@@ -214,11 +216,22 @@ async function executeStep(
     case 'agent_turn': {
       const thread = requireOpenThread(state, step.thread);
       const query = latestCustomerMessage(thread);
-      const recall = async (customer: string, queryText: string, now: string): Promise<MemoryItem[]> =>
-        scopedRecall(engine, customer, queryText, now);
+      const recalls: NonNullable<StepResult['recalls']> = [];
+      const recall = async (
+        customer: string, queryText: string, now: string, via: 'hydrate' | 'tool' = 'tool',
+      ): Promise<MemoryItem[]> => {
+        const started = performance.now();
+        const returned = await scopedRecall(engine, customer, queryText, now);
+        recalls.push({
+          via, query: queryText, returned: returned.map(cloneMemoryItem),
+          latencyMs: Math.max(0, performance.now() - started),
+          estimatedTokens: returned.length === 0 ? 0 : estimateTokens(formatMemory(returned, now)),
+        });
+        return returned;
+      };
       const memory = config.memory.read === 'tool'
         ? []
-        : await recall(thread.customer, query, state.now);
+        : await recall(thread.customer, query, state.now, 'hydrate');
       const customer = scenario.world.customers[thread.customer];
       if (customer === undefined) throw new Error(`Unknown customer "${thread.customer}"`);
 
@@ -259,6 +272,11 @@ async function executeStep(
         usage: turn.usage,
         ...(turn.costUsd === undefined ? {} : { costUsd: turn.costUsd }),
         latencyMs: turn.latencyMs,
+        recalls,
+        responseLatencyMs: turn.latencyMs + recalls
+          .filter((observation) => observation.via === 'hydrate')
+          .reduce((total, observation) => total + observation.latencyMs, 0),
+        judgeCostUsd: judged.costUsd,
       });
       state.costUsd += (turn.costUsd ?? 0) + judged.costUsd;
       if (memoryWrites.length > 0) await engine.write(memoryWrites, state.now);
@@ -360,6 +378,7 @@ async function executeProbes(
     state.costUsd += judged.costUsd;
     state.probes.push({
       id: probe.id,
+      judgeCostUsd: judged.costUsd,
       checks: [...checkProbePatterns(probe, returned), ...judged.checks],
       ...(returned === undefined ? {} : { returned }),
     });
@@ -460,6 +479,7 @@ function result(
     scenario: scenario.id,
     config: config.id,
     repeat,
+    definition: structuredClone({ scenario, config }),
     startedAt,
     ...(judge.spec === undefined ? {} : { judge: judge.spec }),
     finishedAt,

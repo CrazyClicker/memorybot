@@ -1,5 +1,5 @@
-# notes-both: engine=notes read=both write=both
+# Keep read fixed when comparing write paths with notes and notes-agent.
 id: notes-both
 agent:  { provider: openai, model: gpt-5.6-terra }
-memory: { engine: notes, read: both, write: both }
+memory: { engine: notes, read: hydrate, write: both }
 judge:  { provider: anthropic, model: claude-sonnet-5 }   # a different vendor than the agent; fall back to the strongest OpenAI model if no key

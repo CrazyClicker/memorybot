@@ -245,7 +245,8 @@ describe('cellGlyph', () => {
     expect(cellGlyph({ ...emptyCell(), fail: 3 })).toBe('✗');
     expect(cellGlyph({ ...emptyCell(), pass: 2, fail: 1 })).toBe('◐');
     expect(cellGlyph({ ...emptyCell(), partial: 2 })).toBe('◐');
-    expect(cellGlyph({ ...emptyCell(), pass: 2, skipped: 1 })).toBe('✓');
+    expect(cellGlyph({ ...emptyCell(), pass: 2, skipped: 1 })).toBe('◐');
+    expect(cellGlyph({ ...emptyCell(), pass: 1, missing: 2 })).toBe('◐');
   });
 });
 
@@ -254,6 +255,65 @@ describe('median', () => {
     expect(median([4, 1, 3, 2])).toBe(2.5);
     expect(median([5, 1, 3])).toBe(3);
     expect(median([])).toBe(0);
+  });
+});
+
+describe('research evidence', () => {
+  function saved(configId = 'naive'): RunResult {
+    const definition = scenario();
+    definition.hypotheses = [{
+      id: 'learned-cause', claim: 'Memory conveys the cause.',
+      comparison: 'naive against none with other axes fixed',
+      decision_rule: 'Review the specific use, not total passes.',
+      evidence: [{ owner: 't2-agent', key: 'uses:K2' }],
+    }];
+    return { ...run(configId, 1), definition: { scenario: definition, config: config(configId) } };
+  }
+
+  it('uses saved definitions when current YAML has changed, including hypotheses with missing evidence', () => {
+    const changed = scenario();
+    changed.title = 'Edited after the run';
+    const result = saved();
+    const model = buildReport({ runId: 'saved', results: [result], scenarios: [changed], configs: [NONE_CONFIG] });
+    expect(model.scenarios[0]?.title).toBe('Demo story');
+    expect(model.configs[0]?.memory?.engine).toBe('naive');
+    expect(model.scenarios[0]?.checks.find((row) => row.key === 'uses:K2')?.cells.get('naive')?.missing).toBe(1);
+    const markdown = renderReport(model);
+    expect(markdown).toContain('learned-cause');
+    expect(markdown).toContain('review pending');
+    expect(markdown).toContain('0 pass / 0 partial / 0 fail / 0 skipped / 1 missing');
+  });
+
+  it('rejects incompatible saved definitions and mixing legacy and new results', () => {
+    const first = saved();
+    const changed = saved();
+    changed.repeat = 2;
+    changed.definition!.scenario.knowledge['K2']!.statement = 'An incompatible revised fact.';
+    expect(() => buildReport({ runId: 'mixed', results: [first, changed] })).toThrow('Mixed scenario definitions');
+    expect(() => buildReport({ runId: 'mixed', results: [first, run('naive', 2)] })).toThrow('Cannot mix legacy');
+  });
+
+  it('keeps write evidence local to its config instead of attributing another config’s writes', () => {
+    const model = report(smokeResults());
+    const k1 = model.scenarios[0]!.knowledge[0]!;
+    expect(k1.writtenViaByConfig.get('naive')).toEqual(['agent']);
+    expect(k1.writtenViaByConfig.get('none')).toEqual([]);
+  });
+
+  it('distinguishes empty recall from missing telemetry and exposes unknown memory cost', () => {
+    const result = saved('mem0');
+    result.definition!.config.memory.engine = 'mem0';
+    result.steps = [
+      { ...step('t1-agent', [{ key: 'uses:K1', verdict: 'fail' }]), recalls: [], responseLatencyMs: 1250, judgeCostUsd: 0.02 },
+      step('t2-agent', [{ key: 'uses:K2', verdict: 'partial' }]),
+    ];
+    const markdown = renderReport(buildReport({ runId: 'telemetry', results: [result] }));
+    expect(markdown).toContain('Mem0 internal extraction and embedding USD is unknown');
+    expect(markdown).toContain('1.3 s (1/2 turns)');
+    expect(markdown).toMatch(/\| empty +\|/);
+    expect(markdown).toMatch(/\| unrecorded +\|/);
+    expect(markdown).toContain('judgePrompt');
+    expect(markdown).toContain('## Decision record');
   });
 });
 

@@ -1,0 +1,122 @@
+# No coach note, no post-handoff agent turn: isolates learning from a human reply.
+id: human-reply-only
+title: Learn a completed manual repair only from the operator's public reply
+tags: [import, 'memory:personal', 'source:human_reply', write-paths]
+
+hypotheses:
+  - id: operator-reply-learning
+    claim: Conversation consolidation preserves a repair described only in a human reply after handoff.
+    comparison: Compare consolidate engines against none to test learning from the operator reply. The additional write-paths suite compares consolidate and both against agent within the same engine.
+    decision_rule: Require the repair details on a new ticket and in recall, with isolation intact. Agent-only has no observation opportunity after handoff; its gap is a workflow limitation, not an extraction failure.
+    evidence:
+      - { owner: followup-agent, key: 'uses:K1' }
+      - { owner: followup-agent, key: reply.rubric }
+      - { owner: recall-repair, key: 'recalls:K1' }
+      - { owner: isolation, key: 'must_not_recall:K1' }
+
+world:
+  knowledge_base: wiki
+  clock: 2026-09-03T09:00:00Z
+  customers:
+    lavanda:
+      name: Лаванда
+      profile: Косметика ручной работы, тариф «Бизнес». Контактное лицо Ольга.
+    velo_dvor:
+      name: ВелоДвор
+      profile: Магазин велозапчастей, тариф «Старт».
+
+knowledge:
+  K1:
+    kind: personal
+    about: lavanda
+    statement: Для «Лаванды» 4 сентября инженер eng.oleg восстановил 23 пропущенные позиции каталога из резервной копии; повторно загружать исходный файл не нужно.
+    source: [operator-reply]
+
+steps:
+  - id: initial-open
+    type: customer_message
+    thread: tkt_lavanda_repair
+    customer: lavanda
+    at: 2026-09-03T09:00:00Z
+    content: «Лаванда», Ольга. После импорта часть новых товаров пропала. В отчёте ошибок нет, а товаров в каталоге не хватает. Помогите разобраться.
+  - id: initial-agent
+    type: agent_turn
+    thread: tkt_lavanda_repair
+    expect:
+      outcome: escalate
+      tolerated: [ask]
+      reply:
+        must_not: ["/23/"]
+  - id: operator-reply
+    type: human_reply
+    thread: tkt_lavanda_repair
+    author: eng.oleg
+    at: 2026-09-04T14:00:00Z
+    content: |
+      Ольга, сегодня, 4 сентября, восстановил для «Лаванды» 23 пропущенные
+      позиции каталога из резервной копии. Все товары снова в магазине.
+      Повторно загружать исходный файл не нужно. Проверьте, пожалуйста,
+      что позиции на месте.
+  - id: repair-close
+    type: close_ticket
+    thread: tkt_lavanda_repair
+    at: 2026-09-04T15:00:00Z
+  - id: consolidate-repair
+    type: consolidate
+    at: 2026-09-05T09:00:00Z
+
+  - id: followup-open
+    type: customer_message
+    thread: tkt_lavanda_followup
+    customer: lavanda
+    at: 2026-09-08T10:00:00Z
+    content: |
+      «Лаванда», Ольга. Каталог сейчас полный, всё на месте. Коллега
+      спрашивает, что именно вы сделали с тем импортом и сколько позиций
+      вернули. Нужно ещё раз загрузить тот файл для закрепления результата?
+  - id: followup-agent
+    type: agent_turn
+    thread: tkt_lavanda_followup
+    expect:
+      outcome: answer
+      uses: [K1]
+      reply:
+        must: ["/23/", "/резервн/i"]
+        rubric: >-
+          Pass: knows that support restored 23 positions from a backup on
+          4 September and says the original file need not be uploaded again.
+          Does not ask for the old ticket or invent a product-wide fix.
+          Fail: cannot describe the repair, asks the merchant to repeat it,
+          or recommends repeating the upload. Partial: conveys only some
+          repair details or makes the answer conditional on a guessed repair.
+
+  - id: other-open
+    type: customer_message
+    thread: tkt_velo_dvor_1
+    customer: velo_dvor
+    at: 2026-09-08T11:00:00Z
+    content: «ВелоДвор». После импорта не вижу часть товаров, хотя отчёт без ошибок. Их восстановили или нужно загрузить файл снова?
+  - id: other-agent
+    type: agent_turn
+    thread: tkt_velo_dvor_1
+    expect:
+      outcome: escalate
+      tolerated: [ask]
+      must_not_use: [K1]
+      reply:
+        must_not: ["/Лаванда|Ольга|23|eng.oleg/i"]
+        rubric: Does not claim that this merchant's products were restored; treats current missing data as an investigation for support.
+
+probes:
+  - id: recall-repair
+    type: memory_recall
+    customer: lavanda
+    query: Что было сделано с каталогом после импорта?
+    expect:
+      recalls: [K1]
+  - id: isolation
+    type: memory_recall
+    customer: velo_dvor
+    query: 23 позиции восстановлены из резервной копии 4 сентября
+    expect:
+      must_not_recall: [K1]

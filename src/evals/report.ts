@@ -1,7 +1,8 @@
 /**
  * T2.7 — `pnpm eval report`: aggregate a run directory into `evals/results/REPORT.md`.
  *
- * The report answers three questions and nothing else:
+ * The report preserves per-check evidence and adds preregistered hypotheses, review queues,
+ * matched agent comparisons and explicit accounting limits. Its original core questions:
  *
  *   1. what does each config get right — one table per scenario, rows = checks,
  *      columns = configs, cells = the pass rate over repeats;
@@ -23,6 +24,7 @@ import { factTokens } from '../memory/text.ts';
 import {
   type Config,
   type KnowledgeItem,
+  type Hypothesis,
   type MemoryItem,
   type ModelSpec,
   type RunResult,
@@ -31,7 +33,7 @@ import {
   type Score,
   type Verdict,
 } from './schema.ts';
-import { formatPath } from './validate.ts';
+import { expectationKeys, probeKeys, formatPath } from './validate.ts';
 
 export const RESULTS_DIR = 'evals/results';
 export const REPORT_FILE = join(RESULTS_DIR, 'REPORT.md');
@@ -48,6 +50,7 @@ export interface UnreadableResult {
 
 export interface LoadedRun {
   readonly results: RunResult[];
+  readonly sources?: ReadonlyMap<RunResult, string>;
   /** Files that are not result JSON. Reported rather than thrown: one bad file is not a run. */
   readonly unreadable: UnreadableResult[];
 }
@@ -55,6 +58,7 @@ export interface LoadedRun {
 export async function loadRunResults(dir: string): Promise<LoadedRun> {
   const names = (await readdir(dir)).filter((name) => name.endsWith('.json')).sort();
   const results: RunResult[] = [];
+  const sources = new Map<RunResult, string>();
   const unreadable: UnreadableResult[] = [];
 
   for (const name of names) {
@@ -63,6 +67,7 @@ export async function loadRunResults(dir: string): Promise<LoadedRun> {
       const parsed = RunResultSchema.safeParse(JSON.parse(await readFile(path, 'utf8')));
       if (parsed.success) {
         results.push(parsed.data);
+        sources.set(parsed.data, path);
       } else {
         const issues = parsed.error.issues
           .slice(0, 3)
@@ -74,7 +79,7 @@ export async function loadRunResults(dir: string): Promise<LoadedRun> {
       unreadable.push({ path, problem: (error as Error).message });
     }
   }
-  return { results, unreadable };
+  return { results, unreadable, sources };
 }
 
 /** Run directories under `evals/results`, newest first by mtime. Missing directory: none. */
@@ -144,6 +149,7 @@ export function cellDecided(cell: Cell): number {
 export function cellGlyph(cell: Cell): Glyph {
   const decided = cellDecided(cell);
   if (decided === 0) return '–';
+  if (cell.skipped > 0 || cell.missing > 0) return '◐';
   if (cell.pass === decided) return '✓';
   if (cell.fail === decided) return '✗';
   return '◐';
@@ -201,8 +207,9 @@ export interface CheckRow {
 export interface KnowledgeRow {
   readonly id: string;
   readonly item: KnowledgeItem;
-  /** Write paths whose output lexically carries the fact; empty when nothing did. */
+  /** Legacy aggregate for callers; rendered attribution uses writtenViaByConfig instead. */
   readonly learnedVia: readonly WritePath[];
+  readonly writtenViaByConfig: ReadonlyMap<string, readonly WritePath[]>;
   /** The `uses`/`recalls`/`proposes` checks for this item, per config. */
   readonly cells: ReadonlyMap<string, Cell>;
 }
@@ -212,6 +219,7 @@ export interface ScenarioReport {
   readonly title: string;
   readonly checks: readonly CheckRow[];
   readonly knowledge: readonly KnowledgeRow[];
+  readonly hypotheses: readonly Hypothesis[];
 }
 
 export interface ConfigSummary {
@@ -242,6 +250,7 @@ export interface Finding {
 }
 
 export interface RunError {
+  readonly source?: string;
   readonly scenario: string;
   readonly config: string;
   readonly repeat: number;
@@ -250,6 +259,7 @@ export interface RunError {
 
 /** One thread an engine failed to consolidate; the run went on without that memory. */
 export interface ConsolidationFailure {
+  readonly source?: string;
   readonly scenario: string;
   readonly config: string;
   readonly repeat: number;
@@ -266,6 +276,9 @@ export interface ReportModel {
   readonly repeats: number;
   /** Result files produced with the LLM disk cache on; their repeats are replays, not samples. */
   readonly cachedResults: number;
+  readonly results: readonly RunResult[];
+  readonly sources?: ReadonlyMap<RunResult, string>;
+  readonly limitations: readonly string[];
   readonly configs: readonly ConfigSummary[];
   readonly scenarios: readonly ScenarioReport[];
   readonly findings: readonly Finding[];
@@ -277,6 +290,7 @@ export interface ReportModel {
 export interface ReportInputs {
   readonly runId: string;
   readonly results: readonly RunResult[];
+  readonly sources?: ReadonlyMap<RunResult, string>;
   /** Titles, K items and step order. A scenario whose file is gone still reports its checks. */
   readonly scenarios?: readonly Scenario[];
   /** Engine, read/write axes and models. Column order follows this list. */
@@ -292,6 +306,47 @@ export function buildReport(inputs: ReportInputs): ReportModel {
   const configById = new Map((inputs.configs ?? []).map((config) => [config.id, config]));
   const configIds = orderIds(inputs.results.map((result) => result.config), [...configById.keys()]);
   const scenarioIds = orderIds(inputs.results.map((result) => result.scenario), [...scenarioById.keys()]);
+  const limitations: string[] = [];
+  const savedScenarios = new Map<string, string>();
+  const savedConfigs = new Map<string, string>();
+  for (const result of inputs.results) {
+    if (result.definition === undefined) continue;
+    for (const [id, value, seen, kind] of [
+      [result.scenario, result.definition.scenario, savedScenarios, 'scenario'],
+      [result.config, result.definition.config, savedConfigs, 'config'],
+    ] as const) {
+      if (value.id !== id) throw new Error(`Saved ${kind} id does not match result: ${id}`);
+      const encoded = JSON.stringify(value);
+      if (seen.has(id) && seen.get(id) !== encoded) {
+        throw new Error(`Mixed ${kind} definitions for ${id}; report these versions separately.`);
+      }
+      seen.set(id, encoded);
+    }
+    scenarioById.set(result.scenario, result.definition.scenario);
+    configById.set(result.config, result.definition.config);
+  }
+  const legacy = inputs.results.filter((result) => result.definition === undefined).length;
+  if (legacy > 0) limitations.push(`${legacy} legacy result(s) lack saved definitions; YAML metadata may have changed. Do not compare revised scenarios with these runs.`);
+  if (legacy > 0 && legacy < inputs.results.length) {
+    throw new Error('Cannot mix legacy results and results with saved definitions; report separately.');
+  }
+  if (inputs.results.some((result) => result.steps.some((step) => step.recalls === undefined))) {
+    limitations.push('Some turns have no recall observations: retrieval versus answer failures cannot be diagnosed from those turns.');
+  }
+  if (inputs.results.some((result) => result.error !== undefined)) {
+    limitations.push('Some runs stopped early: recorded spend is incomplete and missing checks are not passes.');
+  }
+  if (configIds.some((id) => configById.get(id)?.memory.engine === 'mem0')) {
+    limitations.push('Mem0 internal extraction and embedding USD is unknown; recall uses topK per scope, not the 4,000 estimated-token cap used by naive, notes and xmemory.');
+  }
+  if (configIds.some((id) => configById.get(id)?.memory.engine === 'xmemory')) {
+    limitations.push('xmemory internal USD is unknown. This comparison measures the configured adapter (dump and local ranking), not every native retrieval capability.');
+  }
+  limitations.push('Only present result files are represented. Verify the displayed scenario/config coverage against the run plan, including configs that never started.');
+  limitations.push('Saved definitions freeze scenario and config, not the source code or wiki. Archive the code revision, wiki and lockfile alongside the run before comparing environments.');
+  limitations.push('Scope isolation includes adapter boundaries and runner filtering; it is not an independent test of provider access control.');
+  limitations.push('A few repeats on fixed stories show observed variability, not generalization or a statistically established winner.');
+  limitations.push('Hypothesis conclusions require manual review of controls, paired checks and costs. Lexical write matches are clues, not causal attribution.');
   const rank = indexOf(configIds);
 
   // Config order first, then repeat: the rows of an unknown scenario keep a stable order too.
@@ -310,12 +365,20 @@ export function buildReport(inputs: ReportInputs): ReportModel {
       configIds,
     ),
   );
+  const repeatCounts = new Map<string, number>();
+  for (const result of results) {
+    const pair = `${result.scenario}/${result.config}`;
+    repeatCounts.set(pair, (repeatCounts.get(pair) ?? 0) + 1);
+  }
 
   return {
     runId: inputs.runId,
     generatedAt: inputs.generatedAt ?? new Date().toISOString(),
     resultCount: results.length,
-    repeats: Math.max(1, ...results.map((result) => result.repeat)),
+    results,
+    ...(inputs.sources === undefined ? {} : { sources: inputs.sources }),
+    limitations,
+    repeats: Math.max(1, ...results.map((result) => result.repeat), ...repeatCounts.values()),
     cachedResults: results.filter((result) => result.cached === true).length,
     configs: configIds.map((id) =>
       summarizeConfig(id, configById.get(id), results.filter((result) => result.config === id)),
@@ -329,6 +392,7 @@ export function buildReport(inputs: ReportInputs): ReportModel {
         config: result.config,
         repeat: result.repeat,
         error: result.error ?? '',
+        ...(inputs.sources?.has(result) ? { source: inputs.sources.get(result) } : {}),
       })),
     consolidationFailures: results.flatMap((result) =>
       result.consolidations.flatMap((consolidation) =>
@@ -339,6 +403,7 @@ export function buildReport(inputs: ReportInputs): ReportModel {
           step: consolidation.id,
           thread: failure.thread,
           error: failure.error,
+          ...(inputs.sources?.has(result) ? { source: inputs.sources.get(result) } : {}),
         })),
       ),
     ),
@@ -398,6 +463,22 @@ function buildScenario(
     }
   }
 
+  // Saved definitions let even a run that failed before its first turn retain its obligations.
+  // Legacy reports use only observed rows rather than applying newly edited expectations.
+  if (scenario !== undefined && results.every((result) => result.definition !== undefined)) {
+    for (const step of scenario.steps) {
+      if (step.type !== 'agent_turn') continue;
+      for (const key of expectationKeys(step.expect)) {
+        for (const config of configIds) cellOf(step.id, key, config);
+      }
+    }
+    for (const probe of scenario.probes ?? []) {
+      for (const key of probeKeys(probe)) {
+        for (const config of configIds) cellOf(probe.id, key, config);
+      }
+    }
+  }
+
   const checks = [...rows.values()]
     .sort((a, b) => a.rank - b.rank || a.seq - b.seq)
     .map((row) => {
@@ -417,6 +498,7 @@ function buildScenario(
     title: scenario?.title ?? id,
     checks,
     knowledge: knowledgeRows(scenario, results, configIds, checks),
+    hypotheses: results.every((result) => result.definition !== undefined) ? scenario?.hypotheses ?? [] : [],
   };
 }
 
@@ -444,6 +526,11 @@ function knowledgeRows(
       id,
       item,
       learnedVia: WRITE_PATHS.filter((via) => carriers.some((write) => write.source.via === via)),
+      writtenViaByConfig: new Map(configIds.map((config) => {
+        const local = results.filter((run) => run.config === config).flatMap(runWrites)
+          .filter((write) => carriesFact(write.statement, item.statement));
+        return [config, WRITE_PATHS.filter((via) => local.some((write) => write.source.via === via))];
+      })),
       cells,
     };
   });
@@ -556,14 +643,14 @@ export function renderReport(model: ReportModel): string {
     '',
     '## How to read this',
     '',
-    'Cells are pass rates over repeats: `✓` every repeat passed · `◐` mixed, or partial credit ·',
+    'Cells are pass rates over repeats: `✓` every repeat passed · `◐` mixed, partial or incomplete ·',
     '`✗` every repeat failed · `–` nothing decided it (the engine does not serve the check, no',
     'judge ran, or the run stopped first). The fraction counts outright passes, so two partials',
     'read `◐ 0/2`. Scores are counts, never one number: which check failed is the finding.',
     '',
-    '`learned via` credits a write path with a K item when a memory write it produced repeats at',
+    '`Write evidence by config` credits a path when a recorded memory write repeats at',
     `least ${Math.round(CARRIES_FACT_THRESHOLD * 100)}% of that item's content words. The match is lexical and says only that the`,
-    'path *wrote* something like the fact; whether the fact reached the merchant is the graded',
+    'path *wrote* something like the fact at any time in the run; whether it reached the merchant is in the graded',
     '`uses:`/`recalls:` columns beside it.',
     ...(model.configs.some((config) => config.memory?.engine === 'mem0')
       ? [
@@ -586,17 +673,32 @@ export function renderReport(model: ReportModel): string {
     '## Configs',
     '',
     ...configTable(model),
+    '', '## Experimental limits', '',
+    ...model.limitations.map((limit) => `- ${limit}`),
+    '', '## Common checks and capabilities', '',
+    ...comparisonTable(model),
+    '', '## Cost and response measurements', '',
+    ...measurementTable(model),
   ];
 
   for (const scenario of model.scenarios) {
     out.push('', `## \`${scenario.id}\` — ${scenario.title}`, '', '### Checks', '');
     out.push(...checkTable(scenario, model));
+    out.push('', '### Hypotheses', '', ...hypothesisTables(scenario, model));
     if (scenario.knowledge.length > 0) {
       out.push('', '### Knowledge', '');
       out.push(...knowledgeTable(scenario, model));
+      out.push('', '### Write evidence by config', '', ...writeTable(scenario, model));
     }
   }
 
+  out.push('', '## Review queue', '', ...reviewTable(model));
+  out.push('', '## Decision record', '',
+    'Manual review required. For each hypothesis record supported / not supported / insufficient evidence,',
+    'the compared configs, exact result and check references, and any remaining confound.',
+    'Then record the engine and write path selected for the next milestone, its cost tradeoff,',
+    'and the observation that would change that decision. Do not infer a winner from total passes.',
+  );
   out.push('', '## Findings', '');
   if (model.findings.length === 0) {
     out.push(
@@ -604,7 +706,7 @@ export function renderReport(model: ReportModel): string {
         ? 'No checks were recorded: nothing to compare.'
         : model.configs.length < 2
           ? 'A single config: nothing to compare.'
-          : 'Every config agrees on every check.',
+          : 'No differences in verdict categories were found; inspect fractions and missing coverage before concluding agreement.',
     );
   } else {
     out.push('Checks the configs do not agree on.', '');
@@ -619,7 +721,7 @@ export function renderReport(model: ReportModel): string {
   if (model.errors.length > 0) {
     out.push('', '## Runs that did not finish', '', 'What they completed is still counted above.', '');
     for (const error of model.errors) {
-      out.push(`- \`${error.scenario}.${error.config}.${error.repeat}\` — ${inline(error.error)}`);
+      out.push(`- \`${error.source ?? `${error.scenario}.${error.config}.${error.repeat}`}\` — ${inline(error.error)}`);
     }
   }
 
@@ -633,7 +735,7 @@ export function renderReport(model: ReportModel): string {
     );
     for (const failure of model.consolidationFailures) {
       out.push(
-        `- \`${failure.scenario}.${failure.config}.${failure.repeat}\` · \`${failure.step}\` · ` +
+        `- \`${failure.source ?? `${failure.scenario}.${failure.config}.${failure.repeat}`}\` · \`${failure.step}\` · ` +
           `\`${failure.thread}\` — ${inline(failure.error)}`,
       );
     }
@@ -679,7 +781,7 @@ function configTable(model: ReportModel): string[] {
   ]);
   return table(
     // Counts, not glyphs: this table totals verdicts across every scenario of the run.
-    ['config', 'engine', 'read', 'write', 'agent', 'judge', 'runs', 'pass', 'partial', 'fail', 'skipped', 'USD', 'median turn'],
+    ['config', 'engine', 'read', 'write', 'agent', 'judge', 'runs', 'pass', 'partial', 'fail', 'skipped', 'observed USD', 'median agent loop'],
     rows,
   );
 }
@@ -710,11 +812,10 @@ function knowledgeTable(scenario: ScenarioReport, model: ReportModel): string[] 
     row.item.kind,
     row.item.about,
     row.item.scope,
-    row.learnedVia.length === 0 ? '–' : row.learnedVia.join(' + '),
     ...model.configs.map((config) => cellText(row.cells.get(config.id), model.repeats)),
   ]);
   return table(
-    ['K', 'kind', 'about', 'scope', 'learned via', ...model.configs.map((config) => `\`${config.id}\``)],
+    ['K', 'kind', 'about', 'scope', ...model.configs.map((config) => `\`${config.id}\``)],
     rows,
   );
 }
@@ -730,6 +831,116 @@ function cellText(cell: Cell | undefined, repeats: number): string {
   const total = cellTotal(cell);
   if (repeats < 2 || total < 2 || cellDecided(cell) === 0) return glyph;
   return `${glyph} ${cell.pass}/${total}`;
+}
+
+function counts(cell: Cell): string {
+  return `${cell.pass} pass / ${cell.partial} partial / ${cell.fail} fail / ${cell.skipped} skipped / ${cell.missing} missing`;
+}
+
+function comparisonTable(model: ReportModel): string[] {
+  const totals = new Map(model.configs.map((config) => [config.id, emptyCell()]));
+  let compared = 0;
+  for (const scenario of model.scenarios) {
+    const turns = new Set(model.results.filter((run) => run.scenario === scenario.id)
+      .flatMap((run) => run.steps.map((step) => step.id)));
+    for (const row of scenario.checks) {
+      if (!turns.has(row.owner)) continue;
+      if (!model.configs.every((config) => cellDecided(row.cells.get(config.id) ?? emptyCell()) > 0)) continue;
+      compared += 1;
+      for (const config of model.configs) addCell(totals.get(config.id)!, row.cells.get(config.id)!);
+    }
+  }
+  return [
+    `${compared} agent check rows have at least one decided observation in every displayed config.`,
+    'This is a matched subset; excluded or missing checks remain visible in the scenario tables.',
+    'Probe checks include optional capabilities such as proposals and are shown separately, not added to the common score.',
+    '',
+    ...table(['config', 'common agent checks', 'all probe checks (capabilities vary)'], model.configs.map((config) => {
+      const probes = emptyCell();
+      for (const run of model.results.filter((run) => run.config === config.id)) {
+        for (const probe of run.probes) for (const check of probe.checks) addVerdict(probes, check.verdict);
+      }
+      return [`\`${config.id}\``, counts(totals.get(config.id)!), counts(probes)];
+    })),
+  ];
+}
+
+function measurementTable(model: ReportModel): string[] {
+  const sumKnown = (values: readonly (number | undefined)[]): string =>
+    values.some((value) => value === undefined) ? 'unknown' : values.reduce<number>((n, value) => n + (value ?? 0), 0).toFixed(4);
+  const rows = model.configs.map((config) => {
+    const runs = model.results.filter((run) => run.config === config.id);
+    const steps = runs.flatMap((run) => run.steps);
+    const responses = steps.flatMap((step) => step.responseLatencyMs === undefined ? [] : [step.responseLatencyMs]);
+    const measured = steps.filter((step) => step.recalls !== undefined);
+    const tokens = measured.map((step) => step.recalls!.reduce((n, recall) => n + recall.estimatedTokens, 0));
+    const engine = config.memory?.engine;
+    const extraction = engine === 'none' || engine === 'naive' ? '0.0000'
+      : engine === 'notes' ? sumKnown(runs.flatMap((run) => run.consolidations.map((pass) => pass.costUsd))) : 'unknown';
+    return [
+      `\`${config.id}\``, sumKnown(steps.map((step) => step.costUsd)),
+      sumKnown(runs.flatMap((run) => [...run.steps, ...run.probes].map((part) => part.judgeCostUsd))),
+      extraction,
+      responses.length === 0 ? 'unknown' : `${duration(median(responses))} (${responses.length}/${steps.length} turns)`,
+      tokens.length === 0 ? 'unknown' : `${Math.round(median(tokens))} / ${Math.max(...tokens)} (${measured.length}/${steps.length} turns)`,
+    ];
+  });
+  return [
+    'Recorded completed work only. Judge USD is evaluation overhead, not serving cost.',
+    'Response latency includes initial hydration and the agent loop (including tool recall), excludes judging and subsequent persistence.',
+    'Recall tokens sum the returned memory across reads per turn, estimated as UTF-8 bytes / 4; this is not total model input usage.',
+    'Unknown internal memory spend must not be read as zero. Errors can leave even observable spend unrecorded.',
+    '',
+    ...table(['config', 'agent USD', 'judge USD', 'memory internal USD', 'median response', 'recall tokens median / max (estimated)'], rows),
+  ];
+}
+
+function hypothesisTables(scenario: ScenarioReport, model: ReportModel): string[] {
+  if (scenario.hypotheses.length === 0) return ['No preregistered hypotheses in saved definitions. Legacy runs are not graded against new hypotheses.'];
+  return scenario.hypotheses.flatMap((hypothesis) => [
+    `**${hypothesis.id}.** ${inline(hypothesis.claim)}`, '',
+    `Comparison: ${inline(hypothesis.comparison)}`, '',
+    `Decision rule: ${inline(hypothesis.decision_rule)}`, '',
+    ...table(['evidence', ...model.configs.map((config) => `\`${config.id}\``)], hypothesis.evidence.map((ref) => {
+      const row = scenario.checks.find((row) => row.owner === ref.owner && row.key === ref.key);
+      return [`\`${ref.owner}/${ref.key}\``, ...model.configs.map((config) => {
+        const cell = row?.cells.get(config.id);
+        return cell === undefined ? 'not recorded' : counts(cell);
+      })];
+    })), '',
+    'Conclusion: **review pending** — record supported / not supported / insufficient evidence with result references.', '',
+  ]);
+}
+
+function writeTable(scenario: ScenarioReport, model: ReportModel): string[] {
+  return table(['K', ...model.configs.map((config) => `\`${config.id}\``)], scenario.knowledge.map((row) => [
+    row.id, ...model.configs.map((config) => row.writtenViaByConfig.get(config.id)?.join(' + ') || 'no lexical match'),
+  ]));
+}
+
+function reviewTable(model: ReportModel): string[] {
+  const rows = model.results.flatMap((run) => run.steps.flatMap((step) => {
+    const disputed = step.checks.filter((check) => check.verdict === 'fail' || check.verdict === 'partial');
+    if (disputed.length === 0) return [];
+    const returned = step.recalls?.flatMap((recall) => recall.returned);
+    const recalls = returned === undefined ? 'unrecorded' : returned.length === 0 ? 'empty'
+      : [...new Set(returned.map((item) => item.id))].join(', ');
+    const file = model.sources?.get(run) ?? `${run.scenario}.${run.config}.${run.repeat}.json`;
+    return [[
+      `\`${file}\` / \`${step.id}\``,
+      inline(disputed.map((check) => `${check.key}: ${check.verdict}${check.why === undefined ? '' : ` (${check.why})`}`).join('; ')),
+      inline(recalls), inline(step.reply.slice(0, 220)),
+    ]];
+  }));
+  return [
+    'Audit these partial/failed turns before attributing a difference to memory. Use the named JSON under the run directory:',
+    'consolidations and memoryWrites → recalls (exact prompt/tool payload) → reply → judgePrompt.',
+    'An end-of-scenario probe is a different query at a different time, not proof of what this turn saw.',
+    'Classify manually as write/extraction, retrieval, application, judge, integration, or unknown; multiple causes may apply.',
+    '',
+    ...(rows.length === 0 ? ['No partial or failed turns recorded. Check missing/skipped coverage separately.']
+      : table(['result / turn', 'checks to review', 'returned memory ids', 'reply excerpt'], rows)),
+  ];
 }
 
 function duration(ms: number): string {

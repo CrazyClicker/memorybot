@@ -14,6 +14,8 @@ import {
   type Config,
   ConfigSchema,
   type KnowledgeItem,
+  type Expect,
+  type Probe,
   type Scenario,
   ScenarioSchema,
 } from './schema.ts';
@@ -411,6 +413,30 @@ export function validateScenario(scenario: Scenario, ctx: ValidationContext = {}
 
   // ---- Warnings: declared but never tested ----------------------------------------------
 
+  const owners = new Map<string, Set<string>>();
+  for (const step of scenario.steps) {
+    if (step.type === 'agent_turn') owners.set(step.id, new Set(expectationKeys(step.expect)));
+  }
+  for (const probe of scenario.probes ?? []) {
+    if (stepIndex.has(probe.id)) issues.error('probes', `probe id "${probe.id}" also names a step`);
+    owners.set(probe.id, new Set(probeKeys(probe)));
+  }
+  const hypotheses = new Set<string>();
+  for (const [index, hypothesis] of (scenario.hypotheses ?? []).entries()) {
+    const path = `hypotheses[${index}]`;
+    if (hypotheses.has(hypothesis.id)) issues.error(`${path}.id`, 'duplicate hypothesis id');
+    hypotheses.add(hypothesis.id);
+    const evidence = new Set<string>();
+    hypothesis.evidence.forEach((ref, i) => {
+      const key = `${ref.owner}/${ref.key}`;
+      if (evidence.has(key)) issues.error(`${path}.evidence[${i}]`, `duplicate evidence ${key}`);
+      evidence.add(key);
+      if (!owners.get(ref.owner)?.has(ref.key)) {
+        issues.error(`${path}.evidence[${i}]`, `unknown expected check ${key}`);
+      }
+    });
+  }
+
   for (const [id, fact] of facts) {
     if (!referenced.has(id)) {
       issues.warning(`knowledge.${id}`, `${id} is declared, but no uses, must_not_use, recalls, proposes or wiki_update refers to it`);
@@ -421,6 +447,32 @@ export function validateScenario(scenario: Scenario, ctx: ValidationContext = {}
   }
 
   return issues.list;
+}
+
+/** Stable check keys, shared by hypothesis validation and incomplete-run reporting. */
+export function expectationKeys(expect: Expect | undefined): string[] {
+  if (expect === undefined) return [];
+  return [
+    ...(expect.outcome === undefined ? [] : ['outcome']),
+    ...(expect.uses ?? []).map((id) => `uses:${id}`),
+    ...(expect.must_not_use ?? []).map((id) => `must_not_use:${id}`),
+    ...(expect.reply?.rubric === undefined ? [] : ['reply.rubric']),
+    ...(expect.reply?.must ?? []).map((_, i) => `reply.must[${i}]`),
+    ...(expect.reply?.must_not ?? []).map((_, i) => `reply.must_not[${i}]`),
+    ...(expect.escalation?.reason_must ?? []).map((_, i) => `escalation.reason_must[${i}]`),
+  ];
+}
+
+export function probeKeys(probe: Probe): string[] {
+  return [
+    ...(probe.expect.must_not ?? []).map((_, i) => `must_not[${i}]`),
+    ...(probe.type === 'memory_recall'
+      ? [
+          ...(probe.expect.recalls ?? []).map((id) => `recalls:${id}`),
+          ...(probe.expect.must_not_recall ?? []).map((id) => `must_not_recall:${id}`),
+        ]
+      : (probe.expect.proposes ?? []).map((id) => `proposes:${id}`)),
+  ];
 }
 
 export function validateConfig(config: Config, ctx: ValidationContext = {}): Issue[] {

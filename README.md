@@ -30,14 +30,21 @@ pnpm install
 cp .env.example .env    # OPENAI_API_KEY is enough to start; see the file for the rest
 ```
 
+Before running a paid matrix, choose a set from [the run catalogue](evals/RUNS.md), then read
+[the experiment protocol](evals/EXPERIMENTS.md) and
+[the offline report preview](evals/REPORT-PREVIEW.md). Preview the main 31-pair experiment with
+`pnpm eval run --suite research --dry-run`: source control, five core stories and long-history
+stress, with one consolidate config per engine. `--suite write-paths` selects 15 additional
+pairs for comparing writing modes. `--all` retains its core-directory × all-configs meaning.
+
 ## Commands
 
 | Command | What it does |
 |---|---|
 | `pnpm eval validate` | Check scenarios and configs against the schema |
 | `pnpm eval run` | Run scenarios against configs, write result JSON |
-| `pnpm eval report` | Aggregate a run directory into `evals/results/REPORT.md` |
-| `pnpm eval lint-wiki` | Wiki leak lint: every `uses:` check must fail with engine `none` |
+| `pnpm eval report` | Report one run; repeat `--run` to combine suites and reuse core baselines for writing comparisons |
+| `pnpm eval lint-wiki` | Planned wiki leak lint; currently exits 2 (T1.6 still open) |
 | `pnpm test` | Unit tests (vitest) |
 | `pnpm typecheck` | `tsc --noEmit` |
 

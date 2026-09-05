@@ -1,24 +1,45 @@
 # Scenario: a platform-wide payment incident reported by one merchant becomes
 # shared knowledge through a human's coach note, is relayed to another merchant
-# while it lasts, and is treated as over once its window has passed.
+# while valid. Expiry alone does not confirm recovery; a later human broadcast does.
 #
 # The shared temporal case. «Кофе-точка» reports card payments failing; that is
 # a money question, so the agent escalates (P-001). The engineer replies and
 # leaves two coach notes: one with `scope: product` (the incident: K1, becomes
 # `scope: shared`) and one with `scope: customer` (the reporter's orders and the
-# open double-charge case: K2, stays with «Кофе-точка»). After consolidation
+# open charge-without-paid-order case: K2, stays with «Кофе-точка»). After consolidation
 # «Лаванда» asks the same afternoon: the agent must relay the incident and the
 # QR workaround without a new escalation (P-007) and without a word about
 # «Кофе-точка»'s orders. Two days later «Лаванда» asks again: the incident is
-# past its `valid_until`, so the agent must treat it as resolved. «Кофе-точка»
-# then chases its own open case: the agent must remember order 1153 itself.
+# past its `valid_until`, so the agent must state that the current status is unknown.
+# A separate broadcast then confirms recovery; only after that may it assert recovery.
+# «Кофе-точка» then chases its own open case: the agent must remember order 1153 itself.
 #
 # The wiki knows that «Оплатим» takes cards and QR and that known incidents are
 # relayed, not re-escalated (P-007). It knows of no incident, date or outage.
 
 id: payment-provider-incident
-title: Payment provider incident — broadcast via a coach note, relay while it lasts, drop it after
+title: Payment incident — broadcast, expiry without confirmation, then confirmed recovery
 tags: [payments, incident, "memory:temporal", "memory:personal", "scope:shared"]
+
+hypotheses:
+  - id: broadcast-with-isolation
+    claim: A human broadcast reaches another merchant without leaking the reporter's payment case.
+    comparison: Memory configurations against none, with identical read and write settings across engines.
+    decision_rule: Require the incident answer during its validity window and no private order details; scope guarantees belong to the whole adapter and runner integration.
+    evidence:
+      - { owner: t2-agent, key: outcome }
+      - { owner: t2-agent, key: 'uses:K1' }
+      - { owner: t2-agent, key: 'must_not_use:K2' }
+      - { owner: recall-lavanda, key: 'must_not_recall:K2' }
+  - id: expiry-is-not-recovery
+    claim: Memory distinguishes an expired estimate from subsequently confirmed recovery.
+    comparison: The unknown-status turn before confirmation versus a fresh ticket after a recovery broadcast, for each config.
+    decision_rule: Require uncertainty before confirmation and a specific recovery answer afterwards; neither permanent hedging nor certainty from the deadline passes both phases.
+    evidence:
+      - { owner: t3-agent, key: reply.rubric }
+      - { owner: t3-agent, key: 'must_not_use:K1' }
+      - { owner: t5-agent, key: 'uses:K3' }
+      - { owner: t5-agent, key: reply.rubric }
 
 world:
   knowledge_base: wiki
@@ -53,11 +74,20 @@ knowledge:
     kind: personal
     about: kofe_tochka
     statement: >-
-      У «Кофе-точки» во время сбоя 5 сентября заказы 1152, 1153 и 1155
-      остались в статусе «Ожидает оплаты». По заказу 1153 у покупателя деньги
-      списались с карты, а заказ не оплачен; этот случай отдельно ведёт
-      инженер eng.dasha вместе с «Оплатим» и обещала ответить Антону.
-    source: [t1-open, t1-coach-note-customer, t1-human-reply]
+      У «Кофе-точки» по заказу 1153 списание с карты без оплаченного заказа;
+      этот отдельный случай ведёт инженер eng.dasha и обещала ответить Антону.
+    source: [t1-coach-note-customer, t1-human-reply]
+
+  K3:
+    kind: undocumented
+    about: product
+    scope: shared
+    statement: >-
+      «Оплатим» подтвердил 7 сентября в 10:20, что инцидент с картами
+      5 сентября завершён: приём платежей картами восстановлен, покупателям
+      можно предлагать повторную оплату неоплаченных заказов.
+    source: [recovery-confirmed]
+    # A dated historical confirmation, not a durable documentation candidate.
 
 steps:
 
@@ -188,7 +218,8 @@ steps:
     thread: tkt_kofe_tochka_1
     at: 2026-09-06T09:00:00Z
     note: >-
-      Closed with the incident. The order 1153 case is with the engineer
+      The reporting ticket is closed administratively; this is not a recovery confirmation.
+      The order 1153 case is with the engineer
       outside this ticket, which is why the merchant opens a new one below.
 
   # Routine pass: thread B's exchange becomes «Лаванда»'s own history. Under
@@ -219,16 +250,38 @@ steps:
       has to reason from.
     expect:
       outcome: answer
+      tolerated: [escalate]
       must_not_use: [K1]
       reply:
         rubric: >-
-          Treats the incident as over: the «Оплатим» card outage of
-          5 September was expected to be fixed by 18:00 that day, so card
-          payments work again and the buyers can be invited to pay. Hedging
-          ("it should be fixed, check the status page") is partial. Fail if
-          it says card payments are still down, tells the merchant to wait
-          for the 18:00 recovery, or escalates a question that is only about
-          the known incident.
+          Pass: explains that the previous recovery time was an estimate and
+          there is no subsequent confirmation in the available information.
+          Explicitly says the current status is unknown and directs the
+          merchant to the status page or offers to obtain confirmation.
+          Does not assert either that cards work again or that the outage
+          continues. A conditional suggestion to check the status is fine.
+          Partial: hedges that recovery probably happened without clearly
+          distinguishing the estimate from a confirmation. Fail: guarantees
+          recovery from the elapsed deadline, asserts an ongoing outage,
+          or tells buyers to pay again as if restoration were confirmed.
+
+  # A human now supplies the missing evidence, separately from deadline expiry.
+  - id: recovery-confirmed
+    type: coach_note
+    thread: tkt_kofe_tochka_1
+    author: eng.dasha
+    scope: product
+    at: 2026-09-07T10:30:00Z
+    content: |
+      «Оплатим» подтвердил сегодня, 7 сентября, в 10:20: инцидент с картами
+      5 сентября завершён, приём платежей картами восстановлен. Покупателям
+      можно предлагать повторную оплату неоплаченных заказов. Это подтверждение
+      от провайдера, не вывод из обещания закончить к 18:00. Случаи списания
+      без оплаченного заказа по-прежнему проверяем отдельно.
+
+  - id: consolidate-recovery
+    type: consolidate
+    at: 2026-09-07T10:40:00Z
 
   # ---- Thread D: the reporter chases its own open case (K2) ---------------
   - id: t4-open
@@ -265,25 +318,52 @@ steps:
           Fail if it asks the merchant to repeat the order number or the
           story, or says card payments are currently down.
 
+  # A new ticket has no access to the preceding conversation, only to memory.
+  - id: t5-open
+    type: customer_message
+    thread: tkt_lavanda_3
+    customer: lavanda
+    at: 2026-09-07T12:00:00Z
+    content: |
+      «Лаванда». Есть уже подтверждение по приёму карт? Можно пригласить
+      покупателей завершить оплату заказов, которые тогда остались неоплаченными?
+
+  - id: t5-agent
+    type: agent_turn
+    thread: tkt_lavanda_3
+    expect:
+      outcome: answer
+      uses: [K3]
+      must_not_use: [K1, K2]
+      reply:
+        must_not: ["/115[235]/", "/кофе-точка/i", "/Антон/"]
+        rubric: >-
+          Pass: states that the provider confirmed restoration of card payments
+          and buyers may retry unpaid orders. Does not infer restoration from
+          the old deadline, ask for the incident history again, or expose the
+          reporter's private case. Fail: says confirmation is still missing,
+          the outage is ongoing, or guarantees that already charged orders
+          should be paid again.
+
 probes:
   - id: recall-lavanda
     type: memory_recall
     customer: lavanda
-    query: "оплата картой не проходит, покупатели видят «платёж отклонён»"
+    query: "Есть ли подтверждение восстановления приёма карт после инцидента 5 сентября?"
     expect:
-      recalls: [K1]
+      recalls: [K3]
       must_not_recall: [K2]
 
   - id: recall-kofe-tochka
     type: memory_recall
     customer: kofe_tochka
-    query: "сбой оплаты картами 5 сентября, заказ 1153, списание без оплаты"
+    query: "подтверждение восстановления приёма карт, заказ 1153, списание без оплаты"
     expect:
-      recalls: [K1, K2]
+      recalls: [K2, K3]
 
-  # An incident is not documentation and a merchant's orders never are.
+  # An incident or its recovery confirmation is not documentation and a merchant's orders never are.
   # Engines without proposals() report this as skipped.
   - id: no-documentation-candidates
     type: documentation_proposals
     expect:
-      must_not: ["/115[235]/", "/Антон/", "/кофе-точка/i"]
+      must_not: ["/115[235]/", "/Антон/", "/кофе-точка/i", "/инцидент|восстановлен|18[:.]00/i"]

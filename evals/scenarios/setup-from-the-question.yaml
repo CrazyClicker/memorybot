@@ -20,6 +20,19 @@ id: setup-from-the-question
 title: Setup mentioned in passing — remember it, answer later tickets without asking again
 tags: [payments, delivery, "memory:personal", write-paths]
 
+hypotheses:
+  - id: incidental-learning
+    claim: Setup stated in a routine customer question improves answers on later tickets without asking again.
+    comparison: Compare none and naive with notes, mem0 and xmemory at read=hydrate, write=consolidate. The additional write-paths suite compares writing modes within an engine.
+    decision_rule: Require known-setup answers for both payment and delivery, with isolation intact; use recorded first-turn writes and recall to explain gaps.
+    evidence:
+      - { owner: t2-agent, key: 'uses:K1' }
+      - { owner: t2-agent, key: reply.rubric }
+      - { owner: t3-agent, key: 'uses:K2' }
+      - { owner: t3-agent, key: reply.rubric }
+      - { owner: t4-agent, key: reply.rubric }
+      - { owner: isolation-lavanda, key: 'must_not_recall:K1' }
+
 world:
   knowledge_base: wiki
   clock: 2026-09-01T10:00:00Z

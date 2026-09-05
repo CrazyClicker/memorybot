@@ -1,5 +1,9 @@
 # Memory evals — multistep scenarios for the support agent (format v2)
 
+The 2026-09-05 research extension adds preregistered hypotheses, recall observations and saved
+scenario/config definitions. Read [EXPERIMENTS.md](EXPERIMENTS.md) before selecting a paid matrix;
+[REPORT-PREVIEW.md](REPORT-PREVIEW.md) is an explicitly synthetic, offline format example.
+
 Controlled experiments on one question: **how well does the agent retrieve facts learned
 from earlier tickets and use them on later ones?** Each eval is a multistep *scenario*: a
 small story spanning several tickets in which the agent first has the chance to learn
@@ -72,6 +76,7 @@ world:        # §3.1  who exists, what the agent can look up, when it starts
 knowledge:    # §3.2  what the agent is expected to learn (K1, K2, …)
 steps:        # §3.3  the story, in order
 probes:       # §3.4  end-of-scenario checks against the memory layer itself
+hypotheses:   # §3.5  claims, comparisons and exact evidence references (optional)
 ```
 
 ### 3.1 `world`
@@ -137,6 +142,33 @@ Checks against the memory layer directly, run after the last step:
 
 An engine that cannot serve a probe reports it as `skipped`, never `fail`.
 
+The CSV semantic-fidelity hypothesis additionally uses the opt-in
+[`controls/csv-rule-source.yaml`](controls/csv-rule-source.yaml): three identical questions
+with the original engineer note in their current threads, using the none config. This
+control is excluded from `--all`. It tests whether the support agent understands the source;
+a failing source branch cannot establish loss through memory. See the
+[paired protocol](EXPERIMENTS.md#technical-meaning-source-control-and-three-branch-decisions).
+
+### 3.5 `hypotheses`
+
+Preregister claims before spending on the matrix. References name an actual expected check
+on an agent turn or probe; validation rejects unknown checks and duplicate references/ids.
+This metadata is not exposed to the agent or the extractor.
+
+```yaml
+hypotheses:
+  - id: incidental-learning
+    claim: Earlier customer setup improves a later answer.
+    comparison: Compare none and naive at fixed model, read and write settings.
+    decision_rule: Require specific known-setup advice and no isolation regression.
+    evidence:
+      - { owner: t2-agent, key: 'uses:K1' }
+      - { owner: t2-agent, key: reply.rubric }
+```
+
+Reports show the evidence per config but leave the conclusion for human review. They do
+not infer a supported causal hypothesis from a green cell or a small number of repeats.
+
 ## 4. Expectations
 
 `expect` on an `agent_turn` mixes **deterministic** checks (free) with **judged** checks (an
@@ -169,9 +201,19 @@ only stating the opposite contradicts it. On an `agent_turn` a `temporal` item i
 statement, whatever its date.
 
 **Every temporal scenario** has one `agent_turn` after `valid_until` with `must_not_use` on
-the temporal item: the agent must stop asserting the expired fact.
+the temporal item: the agent must stop asserting the expired fact. Expiry is not evidence
+that the opposite now holds. In the incident scenario, status remains unknown until a
+separate human broadcast confirms recovery; the two phases have separate rubrics.
 
 ## 5. Configurations and results
+
+See the [run catalogue](RUNS.md) for named comparisons, their purposes, commands and expected
+outputs. `--all` selects the five core stories against all eight configs, including write-path
+variants; it excludes source controls and long-history stress. `--suite research` selects
+controls + core + stress (31 pairs per repeat); `--suite write-paths` selects the 15 additional
+writing-mode pairs. Preview with `--dry-run`, execute with `--yes`. Suites save a `PLAN.yaml`
+and group subdirectories; `eval report --run <id>` writes `<run-dir>/REPORT.md` with separate
+comparisons and missing planned results. Keep a campaign record for conclusions and baseline links.
 
 A run = one scenario × one configuration × one repeat. Configurations are small YAML files
 in [configs/](configs/):
@@ -205,7 +247,10 @@ Results go to `evals/results/<run-id>/<scenario>.<config>.<repeat>.json` (git-ig
       "trace": [...], "memoryWrites": [ {"statement": "…", "source": {"via": "agent"}} ],
       "checks": [ {"key": "outcome", "verdict": "pass"},
                   {"key": "uses:K3", "verdict": "fail", "why": "…", "judgePrompt": "…"} ],
-      "costUsd": 0.0004, "latencyMs": 2100 }
+      "costUsd": 0.0004, "latencyMs": 2100, "responseLatencyMs": 2110,
+      "judgeCostUsd": 0.001,
+      "recalls": [{ "via": "hydrate", "query": "…", "returned": [],
+                    "latencyMs": 10, "estimatedTokens": 0 }] }
   ],
   "consolidations": [ { "id": "consolidate-1", "wrote": [ ... ] } ],
   "probes": [ { "id": "recall-dom-i-sad", "verdict": "pass", "returned": [ ... ] } ],
@@ -218,19 +263,42 @@ calls replay the recorded response, so such repeats are one sample graded again 
 says so. `pnpm eval run` refuses `--repeat` above 1 with the cache on unless
 `--allow-cached-repeats` is passed.
 
-Scores are counts, not a single number: a scenario is a story, and which step failed is the
-finding. `pnpm eval report [--run <run-id>] [--out <path>]` aggregates a run directory into
-`REPORT.md`: one table per scenario (rows = checks, columns = configs, cells = pass rate over
-repeats), totals, cost and median latency per config, a "which path learned it" column per K
-item (`agent`, `consolidate`, none), and a findings section listing every check where configs
-disagree. It reads the result JSON only — no model call, so a report costs nothing and can be
-rebuilt from an old run directory at any time.
+Scores are counts, not a single number. `pnpm eval report [--run <run-id>] [--out <path>]`
+aggregates JSON without model calls. It shows scenario check tables, a matched subset of common
+agent checks, probes separately, hypothesis evidence and manual decision records, costs and
+response measurements, per-config lexical write evidence, and a queue of partial/failed turns.
+See [EXPERIMENTS.md](EXPERIMENTS.md#reading-the-report) for interpretation and remaining limits.
 
-Cells read `✓` every repeat passed · `◐` mixed or partial · `✗` every repeat failed · `–`
-nothing decided it (skipped, unjudged, or a run that stopped before the step). "Which path
-learned it" is lexical: a memory write is credited with a K item when it repeats at least 30%
-of that item's content words, stemmed to five characters. It says a path *wrote* something
-like the fact; whether the fact reached the merchant is the judged `uses:`/`recalls:` columns.
+Repeat `--run` to assemble suite results into one research report, for example
+`pnpm eval report --run research-r1 --run write-paths-r1`. The default destination is
+`evals/results/RESEARCH-REPORT.md`. It reuses core baselines for within-engine writing
+comparisons, keeps controls/core/stress separate, counts unique observed spend once and
+preserves original result paths. Incompatible recorded conditions block their comparison;
+missing inputs and unverified source-environment equivalence remain visible. See
+[RUNS.md](RUNS.md#one-report-from-multiple-runs) for requirements and the decision record.
+
+Cells read `✓` every repeat passed · `◐` mixed, partial or incomplete coverage · `✗` every
+repeat failed · `–` nothing decided it. Missing expected checks are reconstructed from saved
+definitions even when every run stopped before the step. Optional capabilities remain skipped.
+
+New results include `definition: {scenario, config}` with the exact parsed inputs. Reports
+prefer these over current YAML, reject conflicting saved definitions under one id, and reject
+mixing legacy results with new ones. Older result JSON remains readable with limitations shown;
+it is not evaluated against new hypotheses. Definitions do not archive the code or wiki: preserve
+those inputs and the lockfile with each run.
+
+Each new step records `recalls: [{via, query, returned, latencyMs, estimatedTokens}]`, including
+both initial hydration and tool reads. `[]` means no recall took place; absence means legacy
+telemetry is unavailable. Returned items are the actual scoped payload sent to the agent, not
+an end-of-run query. `responseLatencyMs` adds initial hydration to the existing agent-loop time
+(which already includes tool reads); judge calls and later persistence are excluded. Step and
+probe `judgeCostUsd` separate evaluation overhead from serving cost. Unknown internal memory
+costs remain unknown rather than zero.
+
+Write evidence is computed independently for each config using a lexical match (at least 30%
+of the target fact's content words, stemmed to five characters, with a minimum-overlap guard).
+It says a path wrote something resembling the fact at some point, not that this write caused
+a specific later answer. Use recorded source, write and recall timestamps to audit attribution.
 
 ## 6. Runner
 
@@ -274,10 +342,11 @@ every `consolidate` step. Recall returns items with `scope == shared`, `about ==
 the run: the runner records the error on that `consolidate` result, the engine wrote nothing
 for the thread, and the report lists it under "Consolidations that failed".
 
-**Wiki leak lint** (`pnpm eval lint-wiki`): every scenario is run with `engine: none`; every
+**Wiki leak lint** (`pnpm eval lint-wiki`, T1.6 still unimplemented): the planned command runs every scenario with `engine: none`; every
 `uses:` check must fail, except checks that follow a `wiki_update` promoting that item. A
-passing `uses` means the fact is in the wiki: fix the wiki, not the scenario. Run it after
-every wiki edit.
+passing `uses` under none must be audited for wiki/CRM/current-message clues or a judge false
+positive before editing content. Until the command lands, inspect the none control manually;
+exit 2 from the stub is not a passing lint.
 
 ## 7. Authoring conventions
 

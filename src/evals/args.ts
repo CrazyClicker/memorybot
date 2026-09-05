@@ -33,13 +33,15 @@ export const COMMANDS: Readonly<Record<CommandName, CommandSpec>> = {
   },
   run: {
     summary: 'Run scenarios against configs and write result JSON.',
-    usage: 'pnpm eval run (--scenario <path> --config <path> | --all) [--repeat N] [--yes]',
+    usage: 'pnpm eval run (--suite <name> | --scenario <path> --config <path> | --all) [--repeat N] [--dry-run] [--yes]',
     options: {
       scenario: { type: 'string', multiple: true, help: 'Scenario file; repeatable.' },
       config: { type: 'string', multiple: true, help: 'Config file; repeatable.' },
-      all: { type: 'boolean', help: 'Every scenario against every config.' },
+      all: { type: 'boolean', help: 'evals/scenarios/*.yaml against evals/configs/*.yaml; excludes controls and stress. See evals/RUNS.md.' },
+      suite: { type: 'string', help: 'research (controls + core + stress), controls, core, stress, or write-paths. Requires --yes to execute.' },
+      'dry-run': { type: 'boolean', help: 'Validate and print the exact plan without creating runtimes or writing results.' },
       repeat: { type: 'string', help: 'Repeats per scenario-config pair (default 1).' },
-      yes: { type: 'boolean', short: 'y', help: 'Skip the cost confirmation prompt.' },
+      yes: { type: 'boolean', short: 'y', help: 'Execute --suite or --all after reviewing the call estimate.' },
       'run-id': { type: 'string', help: 'Name of the results directory (default: a timestamp).' },
       'allow-cached-repeats': {
         type: 'boolean',
@@ -49,11 +51,11 @@ export const COMMANDS: Readonly<Record<CommandName, CommandSpec>> = {
     task: 'T2.5',
   },
   report: {
-    summary: 'Aggregate a results directory into evals/results/REPORT.md.',
-    usage: 'pnpm eval report [--run <run-id>] [--out <path>]',
+    summary: 'Report a run, or combine suite runs into a research report with reused baselines.',
+    usage: 'pnpm eval report [--run <run-id> ...] [--out <path>]',
     options: {
-      run: { type: 'string', help: 'Run id under evals/results (default: the newest).' },
-      out: { type: 'string', help: 'Where to write the Markdown (default: evals/results/REPORT.md).' },
+      run: { type: 'string', multiple: true, help: 'Run id under evals/results; repeat to combine suite runs (default: the newest).' },
+      out: { type: 'string', help: 'Markdown destination (default: evals/results/RESEARCH-REPORT.md for multiple runs; <run-dir>/REPORT.md for one suite; evals/results/REPORT.md for flat runs).' },
     },
     task: 'T2.7',
   },
