@@ -22,10 +22,13 @@
  * - The cursor is `meta.issues_since`: GitHub's `since` (updated at or after) with the latest
  *   `updatedAt` of the issues handled completely. Comments of a listed issue are fetched in
  *   full; `processed` makes re-listing harmless.
+ * - What goes back to GitHub is rendered by `render.ts` (T4.4). The pinned memory issue named
+ *   in `live/config.yaml` is repainted after every write and every clock move, best effort,
+ *   and is never handled as a ticket even when it carries the support label.
  */
 import { AgentDidNotFinishError } from '../agent/index.ts';
 import type { Outcome } from '../evals/schema.ts';
-import { isHuman, type LiveConfig, sameLogin } from './config.ts';
+import { isHuman, type LiveConfig, sameLogin, sessionCustomers } from './config.ts';
 import {
   FORM_MERCHANT_HEADING,
   issueMessage,
@@ -40,6 +43,7 @@ import type {
   GithubPullRequest,
   GithubReaction,
 } from './github.ts';
+import { type ConsolidationTrigger, createRenderer, type LoopRenderer } from './render.ts';
 import {
   ClockMovesForwardOnlyError,
   type Session,
@@ -48,7 +52,7 @@ import {
   SessionTurnSchema,
   wikiPagesFromFiles,
 } from './session.ts';
-import type { EventRecord, ProposalRecord, ThreadRecord } from './state.ts';
+import type { EventRecord, ThreadRecord } from './state.ts';
 
 export const PROPOSAL_BRANCH_PREFIX = 'wiki/proposal-';
 /** GitHub has no 🧠; this is the acknowledgement on an accepted coach note. */
@@ -72,47 +76,6 @@ export const githubIds = {
   close: (number: number): string => `close:${number}`,
   merged: (pullNumber: number): string => `pr:${pullNumber}:merged`,
 } as const;
-
-// ---------------------------------------------------------------------------------------------
-// Rendering (plain here; T4.4 replaces it with `render.ts`)
-// ---------------------------------------------------------------------------------------------
-
-export type ConsolidationTrigger = 'coach' | 'consolidate' | 'close';
-
-export interface ReplyContext {
-  readonly issue: GithubIssue;
-  readonly thread: string;
-}
-
-export interface ConsolidationContext {
-  readonly issueNumber: number;
-  readonly thread: string;
-  readonly trigger: ConsolidationTrigger;
-}
-
-export interface LoopRenderer {
-  /** The bot comment for an agent turn. */
-  reply(turn: SessionTurn, context: ReplyContext): string;
-  /** The comment after a consolidation. */
-  consolidation(result: SessionConsolidation, context: ConsolidationContext): string;
-  /** The comment on the source issue after its proposal PR merged. */
-  wikiUpdated(proposal: ProposalRecord, pull: GithubPullRequest): string;
-}
-
-export const plainRenderer: LoopRenderer = {
-  reply: (turn) => turn.reply,
-  consolidation: (result) => {
-    if (result.wrote.length === 0) return `Консолидация: новых заметок нет (событий: ${result.events}).`;
-    return [
-      `Консолидация: записано заметок — ${result.wrote.length}.`,
-      ...result.wrote.map((item) => {
-        const validity = item.validUntil === undefined ? '' : `, до ${item.validUntil}`;
-        return `- [${item.kind}, ${item.scope}${validity}] ${item.statement}`;
-      }),
-    ].join('\n');
-  },
-  wikiUpdated: (proposal, pull) => `Документация обновлена: страница \`${proposal.page}\` (#${pull.number}).`,
-};
 
 // ---------------------------------------------------------------------------------------------
 // Results
@@ -206,7 +169,9 @@ export class LiveLoop {
     this.session = options.session;
     this.github = options.github;
     this.config = options.config;
-    this.render = options.render ?? plainRenderer;
+    this.render = options.render ?? createRenderer(
+      options.config.memory_issue === undefined ? {} : { memoryIssue: options.config.memory_issue },
+    );
     this.log = options.log ?? consoleLogger();
     this.sleep = options.sleep ?? abortableSleep;
   }
@@ -248,6 +213,7 @@ export class LiveLoop {
     let latest = since;
     let holdBack: string | undefined;
     for (const issue of issues) {
+      if (issue.number === this.config.memory_issue) continue;
       const complete = await this.processIssue(issue, bot, handled, errors);
       if (complete) latest = laterIso(latest, issue.updatedAt);
       else holdBack = earlierIso(holdBack, issue.updatedAt);
@@ -374,6 +340,7 @@ export class LiveLoop {
         state.markProcessed(githubId, { issueNumber: issue.number, result: { clock: now } });
         handled.push({ githubId, issue: issue.number, action: 'clock', detail: now });
         this.log(`#${issue.number}: clock → ${now}`);
+        await this.refreshMemoryIssue('the clock move');
         return;
       }
       case 'coach': {
@@ -387,12 +354,12 @@ export class LiveLoop {
         await this.github.addReaction(comment.id, COACH_REACTION);
         await this.github.minimizeComment(comment.nodeId);
         const posted = await this.consolidateThread(thread, issue.number, 'coach');
-        this.finishConsolidation(githubId, issue.number, 'coach', posted, handled, `${command.scope} note`);
+        await this.finishConsolidation(githubId, issue.number, 'coach', posted, handled, `${command.scope} note`);
         return;
       }
       case 'consolidate': {
         const posted = await this.consolidateThread(thread, issue.number, 'consolidate');
-        this.finishConsolidation(githubId, issue.number, 'consolidate', posted, handled);
+        await this.finishConsolidation(githubId, issue.number, 'consolidate', posted, handled);
         return;
       }
       default:
@@ -409,7 +376,7 @@ export class LiveLoop {
     }
     if (thread.closedAt === undefined) this.session.close(thread.id);
     const posted = await this.consolidateThread(thread, issue.number, 'close');
-    this.finishConsolidation(githubId, issue.number, 'close', posted, handled);
+    await this.finishConsolidation(githubId, issue.number, 'close', posted, handled);
   }
 
   // -- the agent turn ------------------------------------------------------------------------
@@ -456,7 +423,10 @@ export class LiveLoop {
       replyEventId = event.id;
     }
 
-    const comment = await this.github.createComment(issue.number, this.render.reply(turn, { issue, thread: threadId }));
+    const comment = await this.github.createComment(
+      issue.number,
+      this.render.reply(turn, { issue, thread: threadId, wiki: this.session.wiki }),
+    );
     state.transaction(() => {
       state.setEventGithubId(replyEventId, githubIds.comment(comment.id));
       state.markProcessed(githubId, {
@@ -475,6 +445,7 @@ export class LiveLoop {
     } catch (error) {
       this.log(`#${issue.number}: comment posted but labels not applied: ${describe(error)}`);
     }
+    if (turn.memoryWrites.length > 0) await this.refreshMemoryIssue(`#${issue.number} ${turn.id}`);
   }
 
   /** `answer` → `agent:answered`; `ask` → `agent:asked`; `escalate` → `escalated` + the humans. */
@@ -529,14 +500,14 @@ export class LiveLoop {
     return { result, comment };
   }
 
-  private finishConsolidation(
+  private async finishConsolidation(
     githubId: string,
     issueNumber: number,
     action: ConsolidationTrigger,
     posted: { result: SessionConsolidation; comment?: GithubComment },
     handled: HandledEvent[],
     what = 'consolidation',
-  ): void {
+  ): Promise<void> {
     const { result, comment } = posted;
     this.session.state.markProcessed(githubId, {
       issueNumber,
@@ -549,6 +520,7 @@ export class LiveLoop {
     const detail = `${result.events} event(s), ${result.wrote.length} note(s)`;
     handled.push({ githubId, issue: issueNumber, action, ...(comment === undefined ? {} : { comment: comment.id }), detail });
     this.log(`#${issueNumber}: ${what} → ${detail}${comment === undefined ? '' : `, comment ${comment.id}`}`);
+    if (result.wrote.length > 0) await this.refreshMemoryIssue(`#${issueNumber} ${action}`);
   }
 
   // -- proposals (T4.5 opens them; the loop follows their merge) -----------------------------
@@ -585,7 +557,10 @@ export class LiveLoop {
         }
         const comment = source?.issueNumber === undefined
           ? undefined
-          : await this.github.createComment(source.issueNumber, this.render.wikiUpdated(proposal, pull));
+          : await this.github.createComment(
+              source.issueNumber,
+              this.render.wikiUpdated(proposal, pull, { wiki: this.session.wiki }),
+            );
         state.transaction(() => {
           state.setProposalStatus(proposal.itemId, 'merged');
           state.markProcessed(githubId, {
@@ -605,6 +580,29 @@ export class LiveLoop {
         errors.push({ ...(source?.issueNumber === undefined ? {} : { issue: source.issueNumber }), githubId, message: describe(error) });
         this.log(`PR #${pull.number}: ${describe(error)}; will retry next poll`);
       }
+    }
+  }
+
+  // -- the pinned memory issue (T4.4) --------------------------------------------------------
+
+  /**
+   * Repaint the «🧠 Память агента» body after every write and every clock move (what counts as
+   * expired is a function of the clock). Best effort, like the labels: the write is already
+   * recorded, a failure is logged, and the next write repaints the whole body anyway.
+   */
+  private async refreshMemoryIssue(after: string): Promise<void> {
+    const number = this.config.memory_issue;
+    if (number === undefined) return;
+    try {
+      const items = await this.session.memoryItems();
+      const body = this.render.memoryIssue(items, {
+        now: this.session.now(),
+        customers: sessionCustomers(this.config),
+      });
+      await this.github.updateIssueBody(number, body);
+      this.log(`memory issue #${number} repainted after ${after}: ${items.length} note(s)`);
+    } catch (error) {
+      this.log(`memory issue #${number} not repainted after ${after}: ${describe(error)}`);
     }
   }
 

@@ -472,3 +472,31 @@ describe('notes runner wiring', () => {
     expect(result.costUsd).toBeCloseTo(0.000195, 10);
   });
 });
+
+describe('NotesMemoryEngine.list', () => {
+  it('serves every row oldest first, for the live memory issue and `pnpm live memory`', async () => {
+    const notes = engine();
+    await notes.write([
+      item('later', {
+        statement: 'По состоянию на 2026-09-03: магазин доставляет только по Томской области.',
+        createdAt: '2026-09-03T09:00:00Z',
+      }),
+      item('earlier', {
+        statement: 'По состоянию на 2026-09-01: контактное лицо Марина отвечает по будням.',
+        createdAt: '2026-09-01T09:00:00Z',
+      }),
+      item('shared', {
+        kind: 'temporal',
+        scope: 'shared',
+        about: 'product',
+        learnedFrom: 'beta',
+        statement: 'По состоянию на 2026-09-02: карты не проходят до вечера, QR работает.',
+        validUntil: '2026-09-02T18:00:00Z',
+        createdAt: '2026-09-02T09:00:00Z',
+      }),
+    ], NOW);
+
+    expect((await notes.list()).map((entry) => entry.id)).toEqual(['earlier', 'shared', 'later']);
+    expect(await engine().list()).toEqual([]);
+  });
+});

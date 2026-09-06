@@ -23,6 +23,7 @@ import {
   PROPOSAL_BRANCH_PREFIX,
   threadIdFor,
 } from './loop.ts';
+import { type LoopRenderer, plainRenderer, TRACE_SUMMARY } from './render.ts';
 import { Session } from './session.ts';
 import { LiveState } from './state.ts';
 
@@ -30,7 +31,7 @@ const WALL = '2026-09-06T10:00:00.000Z';
 const HUMAN = 'CrazyClicker';
 const MERCHANT = 'marina-dom';
 
-const LIVE_CONFIG: LiveConfig = parseLiveConfig({
+const LIVE_CONFIG_INPUT = {
   repo: 'CrazyClicker/memorybot',
   poll_seconds: 1,
   humans: [HUMAN],
@@ -38,7 +39,8 @@ const LIVE_CONFIG: LiveConfig = parseLiveConfig({
     dom_i_sad: { form: 'Дом и сад', name: 'Дом и сад', profile: 'Магазин товаров для дома.' },
     velo_dvor: { form: 'ВелоДвор', name: 'ВелоДвор', logins: ['velo-dvor'] },
   },
-});
+};
+const LIVE_CONFIG: LiveConfig = parseLiveConfig(LIVE_CONFIG_INPUT);
 
 const WIKI_PAGE = (text: string): string =>
   ['---', 'slug: help', 'title: Помощь', 'summary: Основная справка.', '---', '', text, ''].join('\n');
@@ -87,6 +89,8 @@ class RecordingEngine implements MemoryEngine {
   readonly id = 'recording';
   readonly consolidations: Array<{ thread: ThreadTranscript; now: string }> = [];
   readonly writes: MemoryItem[][] = [];
+  /** Everything written or consolidated, in order: what `list()` serves the memory issue. */
+  readonly items: MemoryItem[] = [];
   proposalItems: MemoryItem[] = [];
 
   async reset(): Promise<void> {}
@@ -97,11 +101,12 @@ class RecordingEngine implements MemoryEngine {
 
   async write(items: MemoryItem[]): Promise<void> {
     this.writes.push(items.map(cloneMemoryItem));
+    this.items.push(...items.map(cloneMemoryItem));
   }
 
   async consolidate(thread: ThreadTranscript, now: string): Promise<MemoryItem[]> {
     this.consolidations.push({ thread: structuredClone(thread), now });
-    return thread.events
+    const written = thread.events
       .filter((event) => event.type === 'coach_note')
       .map((event, index) =>
         note({
@@ -112,10 +117,16 @@ class RecordingEngine implements MemoryEngine {
           createdAt: now,
         }),
       );
+    this.items.push(...written.map(cloneMemoryItem));
+    return written;
   }
 
   async proposals(): Promise<MemoryItem[]> {
     return this.proposalItems.map(cloneMemoryItem);
+  }
+
+  async list(): Promise<MemoryItem[]> {
+    return this.items.map(cloneMemoryItem);
   }
 
   usage(): MemoryEngineUsage {
@@ -137,7 +148,17 @@ interface Fixture {
   wall: Date;
 }
 
-function fixture(memory: Partial<Config['memory']> = {}): Fixture {
+interface FixtureOptions {
+  /** `plainRenderer` unless a test wants the loop's default (`render.ts`). */
+  readonly render?: LoopRenderer | 'default';
+  /** `memory_issue` in the live config; the test opens the issue itself when it should exist. */
+  readonly memoryIssue?: number;
+}
+
+function fixture(memory: Partial<Config['memory']> = {}, options: FixtureOptions = {}): Fixture {
+  const config = options.memoryIssue === undefined
+    ? LIVE_CONFIG
+    : parseLiveConfig({ ...LIVE_CONFIG_INPUT, memory_issue: options.memoryIssue });
   const holder = { wall: new Date(WALL) } as Fixture;
   const clock = (): Date => holder.wall;
   const engine = new RecordingEngine();
@@ -151,7 +172,7 @@ function fixture(memory: Partial<Config['memory']> = {}): Fixture {
     engine,
     wiki: new Wiki([{ slug: 'help', title: 'Помощь', summary: 'Основная справка.', content: 'Исходный текст.' }], { search: true }),
     state,
-    customers: sessionCustomers(LIVE_CONFIG),
+    customers: sessionCustomers(config),
     clock,
     runAgent: async (input) => {
       calls.push(input);
@@ -163,7 +184,8 @@ function fixture(memory: Partial<Config['memory']> = {}): Fixture {
   const loop = new LiveLoop({
     session,
     github,
-    config: LIVE_CONFIG,
+    config,
+    ...(options.render === 'default' ? {} : { render: options.render ?? plainRenderer }),
     log: (line) => {
       log.push(line);
     },
@@ -606,6 +628,94 @@ describe('LiveLoop: proposal pull requests', () => {
     f.github.calls.length = 0;
     await f.loop.poll();
     expect(f.github.calls.map((call) => call.method)).toEqual(['listIssues', 'listComments']);
+  });
+});
+
+describe('LiveLoop: rendering and the memory issue', () => {
+  function repaints(f: Fixture): number {
+    return f.github.calls.filter((call) => call.method === 'updateIssueBody').length;
+  }
+
+  it('posts the reply with the collapsed trace by default and links the memory issue', async () => {
+    const f = fixture({}, { render: 'default', memoryIssue: 1 });
+    f.github.openIssue({ title: 'Память агента', author: HUMAN });
+    const issue = openTicket(f);
+    f.script.push(turn({
+      trace: [
+        { step: 1, toolCalls: [{ tool: 'read_page', input: { slug: 'help' }, output: 'Исходный текст.' }], usage: ZERO_USAGE },
+        { step: 2, toolCalls: [{ tool: 'finish', input: {} }], usage: ZERO_USAGE },
+      ],
+    }));
+
+    await f.loop.poll();
+
+    const [comment] = await botComments(f, issue);
+    expect(comment?.startsWith(`Ответ агента.\n\n<details>\n<summary>${TRACE_SUMMARY}</summary>\n\n`)).toBe(true);
+    expect(comment).toContain('- **Итог:** ответил сам.');
+    expect(comment).toContain('- **База знаний:** читал «Помощь» (`help`).');
+    expect(comment).toContain('- **Вспомнил из памяти** (в промпте): подходящих заметок нет.');
+    expect(comment).toContain('- **Вся память агента:** #1');
+    expect(comment?.endsWith('\n</details>')).toBe(true);
+  });
+
+  it('repaints the memory issue after agent writes, consolidation writes and clock moves, and only then', async () => {
+    const f = fixture({}, { memoryIssue: 1 });
+    const memory = f.github.openIssue({ title: 'Память агента', author: HUMAN }).number;
+    const issue = openTicket(f);
+    f.script.push(turn({ memoryWrites: [note({ id: 'w1', kind: 'personal', statement: 'Оплата двухстадийная.' })] }));
+
+    await f.loop.poll();
+    expect(repaints(f)).toBe(1);
+    expect((await f.github.getIssue(memory)).body).toBe(
+      '- [personal, customer, dom_i_sad] По состоянию на 2026-09-06: Оплата двухстадийная.',
+    );
+    expect(f.log).toContain(`memory issue #${memory} repainted after #${issue} turn-1: 1 note(s)`);
+
+    f.github.commentAs(issue, MERCHANT, 'Спасибо.');
+    await f.loop.poll();
+    expect(repaints(f)).toBe(1);
+
+    f.github.commentAs(issue, HUMAN, '/coach product BOM ломает заголовок.');
+    await f.loop.poll();
+    expect(repaints(f)).toBe(2);
+    expect((await f.github.getIssue(memory)).body.split('\n')).toEqual([
+      '- [personal, customer, dom_i_sad] По состоянию на 2026-09-06: Оплата двухстадийная.',
+      '- [undocumented, shared, dom_i_sad] BOM ломает заголовок.',
+    ]);
+
+    f.github.commentAs(issue, HUMAN, '/consolidate');
+    await f.loop.poll();
+    expect(repaints(f)).toBe(2);
+
+    f.github.commentAs(issue, HUMAN, '/clock 2026-09-07T10:00:00Z');
+    await f.loop.poll();
+    expect(repaints(f)).toBe(3);
+    expect(f.log).toContain(`memory issue #${memory} repainted after the clock move: 2 note(s)`);
+  });
+
+  it('does nothing without memory_issue, logs a failed repaint, and never handles the memory issue as a ticket', async () => {
+    const unset = fixture();
+    openTicket(unset);
+    unset.script.push(turn({ memoryWrites: [note()] }));
+    await unset.loop.poll();
+    expect(repaints(unset)).toBe(0);
+
+    const missing = fixture({}, { memoryIssue: 99 });
+    const issue = openTicket(missing);
+    missing.script.push(turn({ memoryWrites: [note()] }));
+    const result = await missing.loop.poll();
+    expect(result.errors).toEqual([]);
+    expect(result.handled.map((event) => event.action)).toEqual(['answer']);
+    expect(missing.log.some((line) => line.startsWith(`memory issue #99 not repainted after #${issue} turn-1:`))).toBe(true);
+
+    const labelled = fixture({}, { memoryIssue: 1 });
+    labelled.github.openIssue({ title: 'Память агента', author: HUMAN, labels: ['support'] });
+    const ticket = openTicket(labelled);
+    const polled = await labelled.loop.poll();
+    expect(polled.issues).toBe(2);
+    expect(polled.handled.map((event) => event.issue)).toEqual([ticket]);
+    expect(await botComments(labelled, 1)).toEqual([]);
+    expect(labelled.state.threadByIssue(1)).toBeUndefined();
   });
 });
 

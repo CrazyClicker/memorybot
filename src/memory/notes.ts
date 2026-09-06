@@ -250,6 +250,11 @@ export class NotesMemoryEngine implements MemoryEngine {
     );
   }
 
+  /** Every row, oldest first and then in insertion order (T4.4 memory issue, `pnpm live memory`). */
+  async list(): Promise<MemoryItem[]> {
+    return this.queryItems(`SELECT ${SELECT_COLUMNS} FROM notes ORDER BY created_at ASC, rowid ASC`);
+  }
+
   usage(): MemoryEngineUsage {
     return {
       usage: { ...this.cumulativeUsage },

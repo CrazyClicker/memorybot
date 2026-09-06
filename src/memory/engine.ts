@@ -41,6 +41,11 @@ export interface MemoryEngine {
   consolidate(thread: ThreadTranscript, now: string): Promise<MemoryItem[]>;
   /** Engines that cannot serve documentation proposals leave this undefined. */
   proposals?(): Promise<MemoryItem[]>;
+  /**
+   * Every stored item, oldest first: the live memory issue (T4.4) and `pnpm live memory` read
+   * it. Engines that cannot enumerate their store leave this undefined.
+   */
+  list?(): Promise<MemoryItem[]>;
   /** Cumulative observable engine-side LLM use since reset; hosted adapters may omit this. */
   usage?(): MemoryEngineUsage;
   /** Hosted adapters expose operation counts and trace links instead of token usage. */

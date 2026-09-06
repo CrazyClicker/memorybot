@@ -388,6 +388,15 @@ export class Session {
     return this.currentWiki;
   }
 
+  /**
+   * Every note the engine holds, for the pinned memory issue (T4.4) and `pnpm live memory`
+   * (T4.6); [] when the engine cannot enumerate its store.
+   */
+  async memoryItems(): Promise<MemoryItem[]> {
+    if (this.engine.list === undefined) return [];
+    return (await this.engine.list()).map(cloneMemoryItem);
+  }
+
   /** Documentation candidates the engine serves that have no pull request yet (T4.5). */
   async newProposals(): Promise<MemoryItem[]> {
     if (this.engine.proposals === undefined) return [];

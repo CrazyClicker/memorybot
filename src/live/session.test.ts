@@ -81,6 +81,7 @@ class RecordingEngine implements MemoryEngine {
   resetCount = 0;
   private cost = 0;
   proposalItems: MemoryItem[] = [];
+  listItems: MemoryItem[] = [];
 
   async reset(): Promise<void> {
     this.resetCount += 1;
@@ -110,6 +111,10 @@ class RecordingEngine implements MemoryEngine {
 
   async proposals(): Promise<MemoryItem[]> {
     return this.proposalItems.map(cloneMemoryItem);
+  }
+
+  async list(): Promise<MemoryItem[]> {
+    return this.listItems;
   }
 
   usage(): MemoryEngineUsage {
@@ -466,6 +471,19 @@ describe('Session wiki and proposals', () => {
     const noProposals = fixture();
     delete (noProposals.engine as { proposals?: unknown }).proposals;
     expect(await noProposals.session.newProposals()).toEqual([]);
+  });
+
+  it('dumps every note the engine holds as copies, or nothing for an engine without list()', async () => {
+    const f = fixture();
+    f.engine.listItems = [item({ id: 'notes-1' }), item({ id: 'notes-2', scope: 'customer', about: 'dom_i_sad' })];
+    const items = await f.session.memoryItems();
+    expect(items.map((entry) => entry.id)).toEqual(['notes-1', 'notes-2']);
+    expect(items[0]).not.toBe(f.engine.listItems[0]);
+    expect(items[0]?.source).not.toBe(f.engine.listItems[0]?.source);
+
+    const noList = fixture();
+    delete (noList.engine as { list?: unknown }).list;
+    expect(await noList.session.memoryItems()).toEqual([]);
   });
 
   it('resets the state and the engine together, and only when asked', async () => {
