@@ -25,6 +25,7 @@
 import { expiryMs, type MemoryItem, type Outcome } from '../evals/schema.ts';
 import type { WikiPage } from '../wiki/index.ts';
 import type { GithubIssue, GithubPullRequest } from './github.ts';
+import { DEFAULT_LEAK_README, type LeakFindings } from './proposals.ts';
 import type { SessionConsolidation, SessionTurn } from './session.ts';
 import type { ProposalRecord } from './state.ts';
 
@@ -65,6 +66,30 @@ export interface ConsolidationContext {
   readonly proposals?: readonly ProposalLink[];
 }
 
+/** Everything the pull request of one documentation proposal says (T4.5). */
+export interface ProposalRenderInput {
+  /** The documentation candidate the engine served. */
+  readonly item: MemoryItem;
+  readonly page: Pick<WikiPage, 'slug' | 'title'>;
+  /** The chooser's one line on why this page. */
+  readonly why?: string;
+  /** The chooser's headline, without the `wiki: ` prefix; the page title stands in. */
+  readonly title?: string;
+  /** The issue that taught the fact; absent when its thread has none. */
+  readonly sourceIssue?: number;
+  /** Exactly what the branch appends to the page. */
+  readonly addition: string;
+  /** Session clock; decides whether the note reads as expired. */
+  readonly at: string;
+  /** The `wiki/README.md` grep on the addition; absent when the lint is off. */
+  readonly leak?: LeakFindings;
+}
+
+export interface ProposalPullRequest {
+  readonly title: string;
+  readonly body: string;
+}
+
 export interface WikiUpdatedContext {
   readonly wiki?: PageIndex;
 }
@@ -81,6 +106,8 @@ export interface LoopRenderer {
   reply(turn: SessionTurn, context: ReplyContext): string;
   /** The comment after a consolidation. */
   consolidation(result: SessionConsolidation, context: ConsolidationContext): string;
+  /** Title and body of the pull request that proposes one page update. */
+  proposal(input: ProposalRenderInput): ProposalPullRequest;
   /** The comment on the source issue after its proposal PR merged. */
   wikiUpdated(proposal: ProposalRecord, pull: GithubPullRequest, context?: WikiUpdatedContext): string;
   /** The whole body of the pinned memory issue. */
@@ -96,6 +123,7 @@ export function createRenderer(options: RenderOptions = {}): LoopRenderer {
   return {
     reply: (turn, context) => renderReply(turn, { ...context, ...options }),
     consolidation: renderConsolidation,
+    proposal: renderProposalPullRequest,
     wikiUpdated: renderWikiUpdated,
     memoryIssue: renderMemoryIssue,
   };
@@ -104,16 +132,28 @@ export function createRenderer(options: RenderOptions = {}): LoopRenderer {
 /** One line per event, no markup: what the loop tests read and `pnpm live once` can print. */
 export const plainRenderer: LoopRenderer = {
   reply: (turn) => turn.reply,
-  consolidation: (result) => {
-    if (result.wrote.length === 0) return `Консолидация: новых заметок нет (событий: ${result.events}).`;
-    return [
-      `Консолидация: записано заметок — ${result.wrote.length}.`,
-      ...result.wrote.map((item) => {
-        const validity = item.validUntil === undefined ? '' : `, до ${item.validUntil}`;
-        return `- [${item.kind}, ${item.scope}${validity}] ${item.statement}`;
-      }),
-    ].join('\n');
+  consolidation: (result, context) => {
+    const lines = result.wrote.length === 0
+      ? [`Консолидация: новых заметок нет (событий: ${result.events}).`]
+      : [
+        `Консолидация: записано заметок — ${result.wrote.length}.`,
+        ...result.wrote.map((item) => {
+          const validity = item.validUntil === undefined ? '' : `, до ${item.validUntil}`;
+          return `- [${item.kind}, ${item.scope}${validity}] ${item.statement}`;
+        }),
+      ];
+    const proposals = context.proposals ?? [];
+    if (proposals.length > 0) {
+      lines.push(`Предложения в документацию: ${proposals.map((link) => `#${link.number} (${link.page})`).join(', ')}.`);
+    }
+    return lines.join('\n');
   },
+  proposal: (input) => ({
+    title: `wiki: ${input.title ?? input.page.title}`,
+    body:
+      `Предложение в \`${input.page.slug}\`` +
+      `${input.sourceIssue === undefined ? '' : ` из #${input.sourceIssue}`}: ${oneLine(input.item.statement)}`,
+  }),
   wikiUpdated: (proposal, pull) => `Документация обновлена: страница \`${proposal.page}\` (#${pull.number}).`,
   memoryIssue: (items) =>
     items.length === 0
@@ -258,6 +298,70 @@ export function renderWikiUpdated(
 }
 
 // ---------------------------------------------------------------------------------------------
+// The proposal pull request
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * A reviewer must see three things without opening the diff: what is added, why on this page,
+ * and where it was learned. The leak line is a warning, never a verdict — a fact moving from
+ * memory into documentation is expected to match the README's grep list — but a merchant name
+ * in the text is a real defect and says so.
+ */
+export function renderProposalPullRequest(input: ProposalRenderInput): ProposalPullRequest {
+  const page = `«${input.page.title}» (\`${input.page.slug}\`)`;
+  const source = [
+    input.sourceIssue === undefined ? undefined : `#${input.sourceIssue}`,
+    `заметка \`${input.item.id}\``,
+    noteHead(input.item, input.at, { scope: true }),
+  ].filter((part) => part !== undefined);
+  const lines = [
+    `Агент выучил факт, которого нет в документации, и предлагает дописать его на страницу ${page}.`,
+    '',
+    '**Что добавится в конец страницы:**',
+    '',
+    ...fenced(input.addition, 'markdown'),
+    '',
+  ];
+  if (input.why !== undefined && input.why.trim() !== '') {
+    lines.push(`**Почему эта страница:** ${oneLine(input.why)}`, '');
+  }
+  lines.push(`**Источник:** ${source.join(' · ')}`, '');
+  lines.push(...leakLines(input.leak), '');
+  lines.push(
+    '**Как принять:** правьте текст и страницу как угодно — при слиянии бот перечитает всю базу ' +
+      `знаний с \`main\`${input.sourceIssue === undefined ? '' : ` и отпишется в #${input.sourceIssue}`}. ` +
+      'Закрытие без слияния отменяет предложение.',
+  );
+  return { title: `wiki: ${input.title ?? input.page.title}`, body: lines.join('\n') };
+}
+
+function leakLines(leak: LeakFindings | undefined): string[] {
+  const label = `**Проверка на утечку** (\`${DEFAULT_LEAK_README}\`)`;
+  if (leak === undefined) return [`${label}: не выполнялась.`];
+  const lines = [
+    leak.terms.length === 0
+      ? `${label}: совпадений со списком нет.`
+      : `${label}: совпадения — ${leak.terms.map((term) => `\`${term}\``).join(', ')}. Это ожидаемо для факта, ` +
+        'который переезжает из памяти в документацию; после слияния обновите список в README.',
+  ];
+  if (leak.merchants.length > 0) {
+    lines.push(
+      '',
+      `⚠️ **В тексте есть название магазина:** ${leak.merchants.map((name) => `«${name}»`).join(', ')} — ` +
+        'уберите название магазина перед слиянием: страницы базы знаний общие для всех.',
+    );
+  }
+  return lines;
+}
+
+/** A fence longer than any run of backticks inside, so a quoted snippet cannot break out. */
+function fenced(text: string, language = ''): string[] {
+  const longest = [...text.matchAll(/`+/g)].reduce((max, match) => Math.max(max, match[0].length), 0);
+  const fence = '`'.repeat(Math.max(3, longest + 1));
+  return [`${fence}${language}`, text, fence];
+}
+
+// ---------------------------------------------------------------------------------------------
 // The pinned memory issue
 // ---------------------------------------------------------------------------------------------
 
@@ -309,18 +413,23 @@ export interface NoteLineOptions {
   readonly strike?: boolean;
 }
 
-/** `` `kind` · `scope` · validity — statement · flags · #issue ``. */
-export function noteLine(item: MemoryItem, now: string, options: NoteLineOptions = {}): string {
+/** `` `kind` · `scope` · validity ``: a note's head, without its statement. */
+export function noteHead(item: MemoryItem, now: string, options: NoteLineOptions = {}): string {
   const expired = isExpired(item, now);
-  const strike = expired && options.strike === true;
   const head = [`\`${item.kind}\``];
   if (options.scope === true) head.push(`\`${item.scope}\``);
   if (options.customer !== undefined && item.about !== options.customer) {
     head.push(item.about === 'product' ? 'о продукте' : `о \`${item.about}\``);
   }
   const validity = item.validUntil === undefined ? 'бессрочно' : `до ${formatTimestamp(item.validUntil)}`;
-  head.push(expired && !strike ? `${validity}, истекла` : validity);
-  const body = `${head.join(' · ')} — ${oneLine(item.statement)}`;
+  head.push(expired && options.strike !== true ? `${validity}, истекла` : validity);
+  return head.join(' · ');
+}
+
+/** `` `kind` · `scope` · validity — statement · flags · #issue ``. */
+export function noteLine(item: MemoryItem, now: string, options: NoteLineOptions = {}): string {
+  const strike = isExpired(item, now) && options.strike === true;
+  const body = `${noteHead(item, now, options)} — ${oneLine(item.statement)}`;
   const tail = [
     strike ? 'истекла' : undefined,
     item.documentationCandidate === true ? 'кандидат в документацию' : undefined,

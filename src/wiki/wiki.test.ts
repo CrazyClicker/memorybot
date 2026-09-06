@@ -4,7 +4,7 @@ import { join } from 'node:path';
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { createWikiTools, loadWiki, parseWikiPage, WikiPageNotFoundError } from './index.ts';
+import { createWikiTools, loadWiki, parseWikiPage, WikiPageNotFoundError, wikiUpdateSection } from './index.ts';
 
 const PAGE = `---
 slug: test-page
@@ -35,6 +35,8 @@ describe('parseWikiPage', () => {
     expect(() => parseWikiPage(PAGE.replace('test-page', 'Bad Slug'), 'bad.md')).toThrow(/slug "Bad Slug"/);
   });
 });
+
+const PAGE_CONTENT = '## Инструкция\n\nПодключите интеграцию «Курьерика» и сохраните настройки.';
 
 describe('Wiki', () => {
   let directory: string;
@@ -67,6 +69,18 @@ describe('Wiki', () => {
     expect(first.readPage('test-page')).toContain('## Обновление от 2026-09-03\n\nНовый подтверждённый факт.');
     expect(second.readPage('test-page')).not.toContain('Новый подтверждённый факт.');
     expect(await loadWiki(directory).then((wiki) => wiki.readPage('test-page'))).not.toContain('Новый подтверждённый факт.');
+  });
+
+  it('appends exactly the section wikiUpdateSection builds, so a proposal pull request matches', async () => {
+    const wiki = await loadWiki(directory);
+    const section = wikiUpdateSection('  Новый подтверждённый факт.  ', '2026-09-03T14:30:00Z');
+
+    expect(section).toBe('## Обновление от 2026-09-03\n\nНовый подтверждённый факт.');
+    expect(wiki.update('test-page', '  Новый подтверждённый факт.  ', '2026-09-03T14:30:00Z').content).toBe(
+      `${PAGE_CONTENT}\n\n${section}`,
+    );
+    expect(() => wikiUpdateSection('   ', '2026-09-03')).toThrow(/must not be empty/);
+    expect(() => wikiUpdateSection('Факт.', 'позавчера')).toThrow(/must be an ISO date/);
   });
 
   it('indexes page content and rebuilds that entry after an update when search is enabled', async () => {

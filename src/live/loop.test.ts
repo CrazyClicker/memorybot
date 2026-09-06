@@ -10,7 +10,7 @@ import {
   type MemoryItem,
   type ThreadTranscript,
 } from '../memory/index.ts';
-import { Wiki } from '../wiki/index.ts';
+import { Wiki, wikiUpdateSection } from '../wiki/index.ts';
 import { type LiveConfig, parseLiveConfig, sessionCustomers } from './config.ts';
 import { FakeGithubClient } from './fake-github.ts';
 import {
@@ -20,9 +20,11 @@ import {
   ISSUES_SINCE_KEY,
   LiveLoop,
   MAX_TURN_ATTEMPTS,
+  type PollResult,
   PROPOSAL_BRANCH_PREFIX,
   threadIdFor,
 } from './loop.ts';
+import type { PageChoice } from './proposals.ts';
 import { type LoopRenderer, plainRenderer, TRACE_SUMMARY } from './render.ts';
 import { Session } from './session.ts';
 import { LiveState } from './state.ts';
@@ -42,8 +44,16 @@ const LIVE_CONFIG_INPUT = {
 };
 const LIVE_CONFIG: LiveConfig = parseLiveConfig(LIVE_CONFIG_INPUT);
 
-const WIKI_PAGE = (text: string): string =>
-  ['---', 'slug: help', 'title: Помощь', 'summary: Основная справка.', '---', '', text, ''].join('\n');
+const WIKI_PAGE = (text: string, slug = 'help', title = 'Помощь'): string =>
+  ['---', `slug: ${slug}`, `title: ${title}`, 'summary: Основная справка.', '---', '', text, ''].join('\n');
+
+const PAGE_CHOICE: PageChoice = {
+  slug: 'help',
+  why: 'Страница про импорт каталога.',
+  title: 'BOM ломает заголовок sku',
+  usage: ZERO_USAGE,
+  costUsd: 0.0002,
+};
 
 function formBody(merchant: string, message: string): string {
   return `### Магазин\n\n${merchant}\n\n### Сообщение\n\n${message}\n`;
@@ -121,8 +131,11 @@ class RecordingEngine implements MemoryEngine {
     return written;
   }
 
+  /** What the notes engine serves: the rows flagged as documentation candidates. */
   async proposals(): Promise<MemoryItem[]> {
-    return this.proposalItems.map(cloneMemoryItem);
+    const items = [...this.proposalItems, ...this.items.filter((item) => item.documentationCandidate === true)];
+    const byId = new Map(items.map((item) => [item.id, item]));
+    return [...byId.values()].map(cloneMemoryItem);
   }
 
   async list(): Promise<MemoryItem[]> {
@@ -144,6 +157,9 @@ interface Fixture {
   readonly engine: RecordingEngine;
   readonly calls: TurnInput[];
   readonly script: Scripted[];
+  /** Page choices the loop's chooser returns, in order; the default repeats after them. */
+  readonly pageChoices: (PageChoice | Error)[];
+  readonly chooserCalls: MemoryItem[];
   readonly log: string[];
   wall: Date;
 }
@@ -153,6 +169,8 @@ interface FixtureOptions {
   readonly render?: LoopRenderer | 'default';
   /** `memory_issue` in the live config; the test opens the issue itself when it should exist. */
   readonly memoryIssue?: number;
+  /** The leak grep: off unless a test passes one, or `'readme'` for the loop's own default. */
+  readonly leakPattern?: RegExp | 'readme';
 }
 
 function fixture(memory: Partial<Config['memory']> = {}, options: FixtureOptions = {}): Fixture {
@@ -165,12 +183,24 @@ function fixture(memory: Partial<Config['memory']> = {}, options: FixtureOptions
   const state = new LiveState({ path: ':memory:', clock });
   const calls: TurnInput[] = [];
   const script: Scripted[] = [];
+  const pageChoices: (PageChoice | Error)[] = [];
+  const chooserCalls: MemoryItem[] = [];
   const log: string[] = [];
-  const github = new FakeGithubClient({ now: () => clock().toISOString(), files: { 'wiki/help.md': WIKI_PAGE('Исходный текст.') } });
+  const github = new FakeGithubClient({
+    now: () => clock().toISOString(),
+    files: {
+      'wiki/help.md': WIKI_PAGE('Исходный текст.'),
+      'wiki/dostavka.md': WIKI_PAGE('Зоны доставки.', 'dostavka', 'Доставка'),
+      'wiki/README.md': '# Wiki\n',
+    },
+  });
   const session = new Session({
     config: evalConfig(memory),
     engine,
-    wiki: new Wiki([{ slug: 'help', title: 'Помощь', summary: 'Основная справка.', content: 'Исходный текст.' }], { search: true }),
+    wiki: new Wiki([
+      { slug: 'help', title: 'Помощь', summary: 'Основная справка.', content: 'Исходный текст.' },
+      { slug: 'dostavka', title: 'Доставка', summary: 'Основная справка.', content: 'Зоны доставки.' },
+    ], { search: true }),
     state,
     customers: sessionCustomers(config),
     clock,
@@ -186,12 +216,19 @@ function fixture(memory: Partial<Config['memory']> = {}, options: FixtureOptions
     github,
     config,
     ...(options.render === 'default' ? {} : { render: options.render ?? plainRenderer }),
+    ...(options.leakPattern === 'readme' ? {} : { leakPattern: options.leakPattern ?? false }),
+    choosePage: async (_wiki, item) => {
+      chooserCalls.push(item);
+      const next = pageChoices.shift();
+      if (next instanceof Error) throw next;
+      return next ?? PAGE_CHOICE;
+    },
     log: (line) => {
       log.push(line);
     },
     sleep: async () => {},
   });
-  Object.assign(holder, { loop, github, session, state, engine, calls, script, log });
+  Object.assign(holder, { loop, github, session, state, engine, calls, script, pageChoices, chooserCalls, log });
   return holder;
 }
 
@@ -589,7 +626,245 @@ describe('LiveLoop: failures and recovery', () => {
   });
 });
 
-describe('LiveLoop: proposal pull requests', () => {
+describe('LiveLoop: opening proposal pull requests', () => {
+  function candidate(overrides: Partial<MemoryItem> = {}): MemoryItem {
+    return note({
+      id: 'notes-1',
+      about: 'product',
+      scope: 'shared',
+      statement: 'По состоянию на 2026-09-06: BOM ломает заголовок sku, строка исчезает из отчёта.',
+      documentationCandidate: true,
+      ...overrides,
+    });
+  }
+
+  /** A coach note is the on-camera trigger: it consolidates and opens the proposals. */
+  async function coach(f: Fixture, issue: number, text = '/coach product BOM ломает заголовок.'): Promise<PollResult> {
+    f.github.commentAs(issue, HUMAN, text);
+    return f.loop.poll();
+  }
+
+  function pulls(f: Fixture): Promise<Awaited<ReturnType<FakeGithubClient['listPullRequests']>>> {
+    return f.github.listPullRequests({ headPrefix: PROPOSAL_BRANCH_PREFIX, state: 'all' });
+  }
+
+  it('opens one pull request per new candidate, records it and links it from the comment', async () => {
+    const f = fixture();
+    const issue = openTicket(f);
+    await f.loop.poll();
+    f.engine.proposalItems = [candidate({ source: { thread: threadIdFor(issue), via: 'consolidate' } })];
+
+    f.github.commentAs(issue, HUMAN, '/coach product BOM ломает заголовок.');
+    const result = await f.loop.poll();
+
+    const [pull] = await pulls(f);
+    expect(result.errors).toEqual([]);
+    expect(result.handled).toEqual([
+      { githubId: 'comment:2', issue, action: 'coach', comment: 3, proposals: [pull?.number], detail: '3 event(s), 1 note(s), 1 PR(s)' },
+    ]);
+    expect(f.chooserCalls.map((item) => item.id)).toEqual(['notes-1']);
+    expect(pull).toMatchObject({
+      title: 'wiki: BOM ломает заголовок sku',
+      headRef: `${PROPOSAL_BRANCH_PREFIX}notes-1`,
+      baseRef: 'main',
+      labels: ['proposal'],
+      state: 'open',
+    });
+    expect(pull?.body).toContain(`#${issue}`);
+    expect(pull?.body).toContain('<!-- proposal: item=notes-1 page=help -->');
+
+    // The branch holds the page from `main` plus exactly the section a merged update writes.
+    const [committed] = f.github.files(`${PROPOSAL_BRANCH_PREFIX}notes-1`).filter((file) => file.path === 'wiki/help.md');
+    const addition = wikiUpdateSection(f.engine.proposalItems[0]!.statement, WALL);
+    expect(committed?.content).toBe(`${WIKI_PAGE('Исходный текст.').trimEnd()}\n\n${addition}\n`);
+    expect(f.github.files().find((file) => file.path === 'wiki/help.md')?.content).toBe(WIKI_PAGE('Исходный текст.'));
+
+    expect(f.state.proposal('notes-1')).toMatchObject({
+      pullNumber: pull?.number,
+      branch: `${PROPOSAL_BRANCH_PREFIX}notes-1`,
+      page: 'help',
+      sourceThread: threadIdFor(issue),
+      status: 'open',
+    });
+    expect(f.state.processed('comment:2')?.result).toMatchObject({ comment: 3, proposals: [pull?.number] });
+    expect((await botComments(f, issue)).at(-1)).toContain(`Предложения в документацию: #${pull?.number} (help)`);
+    expect(f.log).toContain(`#${issue}: proposal notes-1 → PR #${pull?.number} on \`help\` ($0.0002)`);
+  });
+
+  it('opens nothing for a candidate that already has a pull request', async () => {
+    const f = fixture();
+    const issue = openTicket(f);
+    await f.loop.poll();
+    f.engine.proposalItems = [candidate({ source: { thread: threadIdFor(issue), via: 'consolidate' } })];
+    await coach(f, issue);
+    f.github.calls.length = 0;
+
+    f.github.commentAs(issue, HUMAN, '/consolidate');
+    const result = await f.loop.poll();
+    // The one listing of this poll follows the open proposal; opening proposals listed nothing.
+    const methods = f.github.calls.map((call) => call.method);
+
+    expect(result.errors).toEqual([]);
+    expect(result.handled[0]).toMatchObject({ action: 'consolidate', detail: '0 event(s), 0 note(s)' });
+    expect(result.handled[0]?.proposals).toBeUndefined();
+    expect(await pulls(f)).toHaveLength(1);
+    expect(f.chooserCalls).toHaveLength(1);
+    expect(methods).toEqual(['listPullRequests', 'listIssues', 'listComments', 'createComment']);
+  });
+
+  it('trusts the engine about what a candidate is and keeps a human edit made on main', async () => {
+    const f = fixture();
+    const issue = openTicket(f);
+    await f.loop.poll();
+    // A customer-scoped row: the engine decides what `proposals()` serves, the loop does not re-filter.
+    f.engine.proposalItems = [candidate({
+      about: 'dom_i_sad',
+      scope: 'customer',
+      source: { thread: threadIdFor(issue), via: 'consolidate' },
+    })];
+    f.github.writeFile('wiki/help.md', WIKI_PAGE('Исходный текст.\n\n## Правка человека\n\nДобавлено вручную.'));
+
+    await coach(f, issue);
+
+    const branch = `${PROPOSAL_BRANCH_PREFIX}notes-1`;
+    const committed = f.github.files(branch).find((file) => file.path === 'wiki/help.md')?.content ?? '';
+    expect(committed).toContain('## Правка человека\n\nДобавлено вручную.');
+    expect(committed.endsWith(`${wikiUpdateSection(f.engine.proposalItems[0]!.statement, WALL)}\n`)).toBe(true);
+    expect(await pulls(f)).toHaveLength(1);
+  });
+
+  it('adopts a pull request opened before a crash and restarts a branch left without one', async () => {
+    const f = fixture();
+    const issue = openTicket(f);
+    await f.loop.poll();
+    f.engine.proposalItems = [
+      candidate({ id: 'notes-1', source: { thread: threadIdFor(issue), via: 'consolidate' } }),
+      candidate({ id: 'notes-2', source: { thread: threadIdFor(issue), via: 'consolidate' } }),
+    ];
+    // notes-1: the pull request exists, the state row does not (a crash between the two).
+    const crashed = `${PROPOSAL_BRANCH_PREFIX}notes-1`;
+    await f.github.createBranch(crashed);
+    await f.github.commitFile({ branch: crashed, path: 'wiki/help.md', content: WIKI_PAGE('Исходный текст.\n\nПредложение.'), message: 'wiki' });
+    const orphan = await f.github.createPullRequest({
+      head: crashed,
+      title: 'wiki: BOM',
+      body: `Тело без ссылок.\n\n<!-- proposal: item=notes-1 page=help -->`,
+    });
+    // notes-2: only the branch survived, so it is recreated from today's main.
+    await f.github.createBranch(`${PROPOSAL_BRANCH_PREFIX}notes-2`);
+    f.github.writeFile('wiki/help.md', WIKI_PAGE('Исходный текст с правкой.'));
+
+    await coach(f, issue);
+
+    expect((await pulls(f)).map((pull) => pull.number)).toEqual([orphan.number, orphan.number + 1]);
+    expect(f.state.proposal('notes-1')).toMatchObject({ pullNumber: orphan.number, page: 'help', status: 'open' });
+    expect(f.chooserCalls.map((item) => item.id)).toEqual(['notes-2']);
+    expect(f.log).toContain(`proposal notes-1: adopted #${orphan.number} opened on ${crashed} before a restart`);
+    expect(f.log).toContain(`branch ${PROPOSAL_BRANCH_PREFIX}notes-2 left by an earlier attempt was recreated from main`);
+    expect(f.github.files(`${PROPOSAL_BRANCH_PREFIX}notes-2`).find((file) => file.path === 'wiki/help.md')?.content)
+      .toContain('Исходный текст с правкой.');
+  });
+
+  it('adopts a pull request whose body lost the marker by looking at what its branch changed', async () => {
+    const f = fixture();
+    const issue = openTicket(f);
+    await f.loop.poll();
+    f.engine.proposalItems = [candidate({ source: { thread: threadIdFor(issue), via: 'consolidate' } })];
+    const branch = `${PROPOSAL_BRANCH_PREFIX}notes-1`;
+    await f.github.createBranch(branch);
+    await f.github.commitFile({ branch, path: 'wiki/dostavka.md', content: WIKI_PAGE('Зоны доставки. И ещё.', 'dostavka', 'Доставка'), message: 'wiki' });
+    const orphan = await f.github.createPullRequest({ head: branch, title: 'wiki', body: 'Человек переписал описание.' });
+
+    await coach(f, issue);
+
+    expect(f.state.proposal('notes-1')).toMatchObject({ pullNumber: orphan.number, page: 'dostavka' });
+    expect(await pulls(f)).toHaveLength(1);
+    expect(f.chooserCalls).toEqual([]);
+  });
+
+  it('reports a chooser failure, still comments, and opens the pull request next time', async () => {
+    const f = fixture();
+    const issue = openTicket(f);
+    await f.loop.poll();
+    f.engine.proposalItems = [candidate({ source: { thread: threadIdFor(issue), via: 'consolidate' } })];
+    f.pageChoices.push(new Error('model unavailable'));
+
+    const result = await coach(f, issue);
+
+    expect(result.errors).toEqual([{ issue, message: 'proposal for notes-1 not opened: model unavailable' }]);
+    expect(result.handled[0]).toMatchObject({ action: 'coach', comment: 3 });
+    expect(result.handled[0]?.proposals).toBeUndefined();
+    expect(await pulls(f)).toEqual([]);
+    expect(f.state.proposal('notes-1')).toBeUndefined();
+    expect((await botComments(f, issue)).at(-1)).not.toContain('Предложения в документацию');
+
+    f.github.commentAs(issue, HUMAN, '/consolidate');
+    const retried = await f.loop.poll();
+
+    expect(retried.errors).toEqual([]);
+    expect((await pulls(f)).map((pull) => pull.headRef)).toEqual([`${PROPOSAL_BRANCH_PREFIX}notes-1`]);
+    expect(f.state.proposal('notes-1')?.status).toBe('open');
+  });
+
+  it('keeps the consolidation comment when the pull requests cannot be listed', async () => {
+    const f = fixture();
+    const issue = openTicket(f);
+    await f.loop.poll();
+    f.engine.proposalItems = [candidate({ source: { thread: threadIdFor(issue), via: 'consolidate' } })];
+    const listPullRequests = f.github.listPullRequests.bind(f.github);
+    f.github.listPullRequests = async () => {
+      throw new Error('GitHub is down');
+    };
+
+    const result = await coach(f, issue);
+    f.github.listPullRequests = listPullRequests;
+
+    expect(result.errors).toEqual([{ issue, message: 'proposal pull requests not listed: GitHub is down' }]);
+    expect(result.handled[0]).toMatchObject({ action: 'coach', comment: 3, detail: '3 event(s), 1 note(s)' });
+    expect(f.chooserCalls).toEqual([]);
+    expect(f.state.proposal('notes-1')).toBeUndefined();
+    expect((await botComments(f, issue)).at(-1)).toContain('Консолидация: записано заметок');
+    expect(f.log).toContain(
+      `#${issue}: proposal pull requests not listed: GitHub is down; proposals will be opened at the next consolidation`,
+    );
+
+    f.github.commentAs(issue, HUMAN, '/consolidate');
+    await f.loop.poll();
+    expect((await pulls(f)).map((pull) => pull.headRef)).toEqual([`${PROPOSAL_BRANCH_PREFIX}notes-1`]);
+  });
+
+  it('proposes what the agent wrote about the product under write: agent, and merging it updates the wiki', async () => {
+    const f = fixture({ write: 'agent' }, { render: 'default', leakPattern: 'readme' });
+    const issue = openTicket(f);
+    f.script.push(turn({
+      memoryWrites: [candidate({
+        id: 'agent-issue-1-turn-1-1',
+        source: { thread: threadIdFor(issue), step: 'turn-1', via: 'agent' },
+      })],
+    }));
+    await f.loop.poll();
+    expect(await pulls(f)).toEqual([]);
+
+    f.github.commentAs(issue, HUMAN, '/consolidate');
+    await f.loop.poll();
+
+    const [pull] = await pulls(f);
+    expect(pull?.headRef).toBe(`${PROPOSAL_BRANCH_PREFIX}agent-issue-1-turn-1-1`);
+    expect(pull?.body).toContain('**Почему эта страница:** Страница про импорт каталога.');
+    expect(pull?.body).toContain('заметка `agent-issue-1-turn-1-1`');
+    // The leak grep of the repository README runs on the addition and warns without blocking.
+    expect(pull?.body).toContain('совпадения — `BOM`');
+
+    f.github.mergePullRequest(pull!.number);
+    await f.loop.poll();
+
+    expect(f.state.proposal('agent-issue-1-turn-1-1')?.status).toBe('merged');
+    expect(f.session.wiki.readPage('help')).toContain('BOM ломает заголовок sku');
+    expect((await botComments(f, issue)).at(-1)).toContain('Документация обновлена');
+  });
+});
+
+describe('LiveLoop: proposal pull requests merged by a human', () => {
   async function proposal(f: Fixture, itemId: string, page: string, sourceThread: string, text: string): Promise<number> {
     const branch = `${PROPOSAL_BRANCH_PREFIX}${itemId}`;
     await f.github.createBranch(branch);

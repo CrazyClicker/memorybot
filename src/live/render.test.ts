@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { MemoryItem } from '../evals/schema.ts';
 import { ZERO_USAGE } from '../llm/index.ts';
+import { wikiUpdateSection } from '../wiki/index.ts';
 import type { GithubPullRequest } from './github.ts';
 import {
   createRenderer,
@@ -11,6 +12,7 @@ import {
   plainRenderer,
   renderConsolidation,
   renderMemoryIssue,
+  renderProposalPullRequest,
   renderReply,
   renderWikiUpdated,
   TRACE_SUMMARY,
@@ -237,6 +239,94 @@ describe('renderConsolidation', () => {
         '_Извлечение: $0.0000._',
       ].join('\n'),
     );
+  });
+});
+
+describe('renderProposalPullRequest', () => {
+  const CANDIDATE = item('notes-4', {
+    kind: 'undocumented',
+    about: 'product',
+    learnedFrom: 'dom_i_sad',
+    scope: 'shared',
+    statement:
+      'По состоянию на 2026-09-06: при BOM в первой ячейке заголовок sku не распознаётся,\nи строка молча исчезает из отчёта.',
+    documentationCandidate: true,
+    source: { thread: 'issue-7', via: 'consolidate' },
+  });
+
+  it('shows the addition, the reason, the source note and the leak warning', async () => {
+    const { title, body } = renderProposalPullRequest({
+      item: CANDIDATE,
+      page: { slug: 'import-eksport-csv', title: 'Импорт и экспорт товаров (CSV)' },
+      why: 'Страница описывает разбор файла и сопоставление по sku,\n  то есть ровно то, что нарушает BOM.',
+      title: 'BOM ломает заголовок sku',
+      sourceIssue: 7,
+      addition: wikiUpdateSection(CANDIDATE.statement, AT),
+      at: AT,
+      leak: { terms: ['BOM', 'молча'], merchants: [] },
+    });
+
+    expect(title).toBe('wiki: BOM ломает заголовок sku');
+    expect(body).toContain('#7');
+    await expect(body).toMatchFileSnapshot('__snapshots__/proposal-import.md');
+  });
+
+  it('falls back to the page title, keeps a thread without an issue, and calls out a merchant name', async () => {
+    const leaked = { ...CANDIDATE, statement: 'По состоянию на 2026-09-06: «Дом и сад» теряет строки при импорте.' };
+    const { title, body } = renderProposalPullRequest({
+      item: leaked,
+      page: { slug: 'import-eksport-csv', title: 'Импорт и экспорт товаров (CSV)' },
+      addition: wikiUpdateSection(leaked.statement, AT),
+      at: AT,
+      leak: { terms: ['Дом и сад', 'пропуск'], merchants: ['Дом и сад'] },
+    });
+
+    expect(title).toBe('wiki: Импорт и экспорт товаров (CSV)');
+    expect(body).not.toMatch(/#\d/);
+    await expect(body).toMatchFileSnapshot('__snapshots__/proposal-merchant.md');
+  });
+
+  it('says when the lint did not run, and keeps a fenced statement inside the block', () => {
+    const withFence = { ...CANDIDATE, statement: 'Заголовок пишется как ```sku```.' };
+    const body = renderProposalPullRequest({
+      item: withFence,
+      page: { slug: 'dostavka', title: 'Доставка и зоны' },
+      addition: wikiUpdateSection(withFence.statement, AT),
+      at: AT,
+    }).body;
+
+    expect(body).toContain('````markdown\n## Обновление от 2026-09-06\n\nЗаголовок пишется как ```sku```.\n````');
+    expect(body).toContain('**Проверка на утечку** (`wiki/README.md`): не выполнялась.');
+    expect(body).toContain('**Источник:** заметка `notes-4` · `undocumented` · `shared` · бессрочно');
+  });
+
+  it('adds the pull-request links to the plain consolidation line the loop tests read', () => {
+    const context = { issueNumber: 7, thread: 'issue-7', trigger: 'coach' } as const;
+    expect(plainRenderer.consolidation(consolidation({ events: 2 }), context)).toBe(
+      'Консолидация: новых заметок нет (событий: 2).',
+    );
+    expect(plainRenderer.consolidation(consolidation({ events: 2 }), {
+      ...context,
+      proposals: [{ number: 12, page: 'import-eksport-csv' }],
+    })).toBe(
+      'Консолидация: новых заметок нет (событий: 2).\nПредложения в документацию: #12 (import-eksport-csv).',
+    );
+  });
+
+  it('is one line in the plain renderer the loop tests read', () => {
+    expect(plainRenderer.proposal({
+      item: CANDIDATE,
+      page: { slug: 'import-eksport-csv', title: 'Импорт и экспорт товаров (CSV)' },
+      title: 'BOM ломает заголовок sku',
+      sourceIssue: 7,
+      addition: 'unused',
+      at: AT,
+    })).toEqual({
+      title: 'wiki: BOM ломает заголовок sku',
+      body:
+        'Предложение в `import-eksport-csv` из #7: По состоянию на 2026-09-06: при BOM в первой ячейке ' +
+        'заголовок sku не распознаётся, и строка молча исчезает из отчёта.',
+    });
   });
 });
 

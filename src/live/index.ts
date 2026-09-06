@@ -96,6 +96,22 @@ export {
 } from './events.ts';
 export type { HumanCommand, ResolvedCustomer } from './events.ts';
 export {
+  appendWikiUpdate,
+  createPageChooser,
+  DEFAULT_LEAK_README,
+  findWikiFile,
+  leakMatches,
+  loadLeakPattern,
+  MAX_PROPOSAL_TITLE,
+  PAGE_CHOICE_INSTRUCTIONS,
+  parseLeakPattern,
+  parseProposalMarker,
+  proposalBranch,
+  proposalFilePath,
+  proposalMarker,
+} from './proposals.ts';
+export type { LeakFindings, PageChoice, PageChooser, PageChooserOptions } from './proposals.ts';
+export {
   abortableSleep,
   COACH_REACTION,
   consoleLogger,
@@ -119,11 +135,13 @@ export {
   createRenderer,
   formatTimestamp,
   isExpired,
+  noteHead,
   noteLine,
   plainRenderer,
   READ_PAGE_TOOL,
   renderConsolidation,
   renderMemoryIssue,
+  renderProposalPullRequest,
   renderReply,
   renderWikiUpdated,
   SEARCH_WIKI_TOOL,
@@ -137,6 +155,8 @@ export type {
   NoteLineOptions,
   PageIndex,
   ProposalLink,
+  ProposalPullRequest,
+  ProposalRenderInput,
   RenderOptions,
   ReplyContext,
   ReplyRenderOptions,

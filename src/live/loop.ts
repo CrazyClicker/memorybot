@@ -10,7 +10,8 @@
  *   are skipped. A merchant comment is a `customer_message` and an agent turn unless the issue
  *   is `escalated`; a human comment is a `human_reply`, or one of `/coach [product] …`,
  *   `/clock <ISO>`, `/consolidate`; a closed issue consolidates; a merged proposal PR reloads
- *   the wiki from `main`.
+ *   the wiki from `main`. Every consolidation opens a pull request for each documentation
+ *   candidate that has none (T4.5); the proposal row in the state is the idempotency key.
  * - Idempotency (§8): every GitHub object the loop acts on has an id in `processed`
  *   (`issue:N`, `comment:ID`, `close:N`, `pr:N:merged`). The id is marked processed in the
  *   same transaction that links the posted comment to the session event, immediately after
@@ -28,6 +29,7 @@
  */
 import { AgentDidNotFinishError } from '../agent/index.ts';
 import type { Outcome } from '../evals/schema.ts';
+import { wikiUpdateSection } from '../wiki/index.ts';
 import { isHuman, type LiveConfig, sameLogin, sessionCustomers } from './config.ts';
 import {
   FORM_MERCHANT_HEADING,
@@ -36,14 +38,35 @@ import {
   parseIssueForm,
   resolveIssueCustomer,
 } from './events.ts';
-import type {
-  GithubClient,
-  GithubComment,
-  GithubIssue,
-  GithubPullRequest,
-  GithubReaction,
+import {
+  DEFAULT_BRANCH,
+  type GithubClient,
+  type GithubComment,
+  type GithubFile,
+  type GithubIssue,
+  githubErrorStatus,
+  type GithubPullRequest,
+  type GithubReaction,
 } from './github.ts';
-import { type ConsolidationTrigger, createRenderer, type LoopRenderer } from './render.ts';
+import {
+  appendWikiUpdate,
+  createPageChooser,
+  DEFAULT_LEAK_README,
+  findWikiFile,
+  leakMatches,
+  loadLeakPattern,
+  type PageChooser,
+  parseProposalMarker,
+  PROPOSAL_BRANCH_PREFIX,
+  proposalBranch,
+  proposalMarker,
+} from './proposals.ts';
+import {
+  type ConsolidationTrigger,
+  createRenderer,
+  type LoopRenderer,
+  type ProposalLink,
+} from './render.ts';
 import {
   ClockMovesForwardOnlyError,
   type Session,
@@ -54,7 +77,7 @@ import {
 } from './session.ts';
 import type { EventRecord, ThreadRecord } from './state.ts';
 
-export const PROPOSAL_BRANCH_PREFIX = 'wiki/proposal-';
+export { PROPOSAL_BRANCH_PREFIX } from './proposals.ts';
 /** GitHub has no 🧠; this is the acknowledgement on an accepted coach note. */
 export const COACH_REACTION: GithubReaction = 'eyes';
 export const MAX_TURN_ATTEMPTS = 3;
@@ -98,6 +121,8 @@ export interface HandledEvent {
   readonly action: LoopAction;
   /** The comment the loop posted, when it posted one. */
   readonly comment?: number;
+  /** Documentation-proposal pull requests this consolidation opened (T4.5). */
+  readonly proposals?: number[];
   readonly detail?: string;
 }
 
@@ -116,6 +141,13 @@ export interface PollResult {
   readonly since?: string;
 }
 
+/** What one consolidation produced: the engine's result, the comment and the proposals. */
+interface Consolidated {
+  readonly result: SessionConsolidation;
+  readonly comment?: GithubComment;
+  readonly proposals: ProposalLink[];
+}
+
 export type Logger = (line: string) => void;
 export type Sleep = (ms: number, signal?: AbortSignal) => Promise<void>;
 
@@ -124,6 +156,10 @@ export interface LoopOptions {
   readonly github: GithubClient;
   readonly config: LiveConfig;
   readonly render?: LoopRenderer;
+  /** Picks the wiki page of a proposal; built from the session config's agent model by default. */
+  readonly choosePage?: PageChooser;
+  /** The `wiki/README.md` leak grep; `false` turns the lint off, absent reads the file. */
+  readonly leakPattern?: RegExp | false;
   readonly log?: Logger;
   readonly sleep?: Sleep;
 }
@@ -163,7 +199,11 @@ export class LiveLoop {
   private readonly render: LoopRenderer;
   private readonly log: Logger;
   private readonly sleep: Sleep;
+  private readonly leakOption: RegExp | false | undefined;
   private bot: string | undefined;
+  private chooser: PageChooser | undefined;
+  private leak: RegExp | undefined;
+  private leakLoaded = false;
 
   constructor(options: LoopOptions) {
     this.session = options.session;
@@ -172,6 +212,8 @@ export class LiveLoop {
     this.render = options.render ?? createRenderer(
       options.config.memory_issue === undefined ? {} : { memoryIssue: options.config.memory_issue },
     );
+    this.chooser = options.choosePage;
+    this.leakOption = options.leakPattern;
     this.log = options.log ?? consoleLogger();
     this.sleep = options.sleep ?? abortableSleep;
   }
@@ -238,10 +280,10 @@ export class LiveLoop {
       const comments = await this.github.listComments(issue.number);
       for (const comment of comments) {
         if (sameLogin(comment.author, bot) || state.isProcessed(githubIds.comment(comment.id))) continue;
-        await this.handleComment(issue, comment, handled);
+        await this.handleComment(issue, comment, handled, errors);
       }
       if (issue.state === 'closed' && !state.isProcessed(githubIds.close(issue.number))) {
-        await this.handleClose(issue, handled);
+        await this.handleClose(issue, handled, errors);
       }
       return true;
     } catch (error) {
@@ -281,7 +323,12 @@ export class LiveLoop {
     await this.answer(issue, threadId, githubId, handled);
   }
 
-  private async handleComment(issue: GithubIssue, comment: GithubComment, handled: HandledEvent[]): Promise<void> {
+  private async handleComment(
+    issue: GithubIssue,
+    comment: GithubComment,
+    handled: HandledEvent[],
+    errors: PollError[],
+  ): Promise<void> {
     const githubId = githubIds.comment(comment.id);
     const thread = this.session.state.threadByIssue(issue.number);
     if (thread === undefined) {
@@ -289,7 +336,7 @@ export class LiveLoop {
       return;
     }
     if (isHuman(this.config, comment.author)) {
-      await this.handleHumanComment(issue, comment, thread, handled);
+      await this.handleHumanComment(issue, comment, thread, handled, errors);
       return;
     }
     if (thread.closedAt !== undefined) {
@@ -309,6 +356,7 @@ export class LiveLoop {
     comment: GithubComment,
     thread: ThreadRecord,
     handled: HandledEvent[],
+    errors: PollError[],
   ): Promise<void> {
     const githubId = githubIds.comment(comment.id);
     const state = this.session.state;
@@ -353,12 +401,12 @@ export class LiveLoop {
         });
         await this.github.addReaction(comment.id, COACH_REACTION);
         await this.github.minimizeComment(comment.nodeId);
-        const posted = await this.consolidateThread(thread, issue.number, 'coach');
+        const posted = await this.consolidateThread(thread, issue.number, 'coach', errors);
         await this.finishConsolidation(githubId, issue.number, 'coach', posted, handled, `${command.scope} note`);
         return;
       }
       case 'consolidate': {
-        const posted = await this.consolidateThread(thread, issue.number, 'consolidate');
+        const posted = await this.consolidateThread(thread, issue.number, 'consolidate', errors);
         await this.finishConsolidation(githubId, issue.number, 'consolidate', posted, handled);
         return;
       }
@@ -367,7 +415,7 @@ export class LiveLoop {
     }
   }
 
-  private async handleClose(issue: GithubIssue, handled: HandledEvent[]): Promise<void> {
+  private async handleClose(issue: GithubIssue, handled: HandledEvent[], errors: PollError[]): Promise<void> {
     const githubId = githubIds.close(issue.number);
     const thread = this.session.state.threadByIssue(issue.number);
     if (thread === undefined) {
@@ -375,7 +423,7 @@ export class LiveLoop {
       return;
     }
     if (thread.closedAt === undefined) this.session.close(thread.id);
-    const posted = await this.consolidateThread(thread, issue.number, 'close');
+    const posted = await this.consolidateThread(thread, issue.number, 'close', errors);
     await this.finishConsolidation(githubId, issue.number, 'close', posted, handled);
   }
 
@@ -487,43 +535,208 @@ export class LiveLoop {
 
   // -- consolidation -------------------------------------------------------------------------
 
-  /** Consolidate and comment; a close with nothing new to consolidate stays silent. */
+  /**
+   * Consolidate, open the proposal pull requests, then comment with their links; a close with
+   * nothing new to consolidate stays silent and opens nothing. A crash between the pull
+   * requests and the comment loses the comment, never a pull request: the proposal rows are
+   * written as each one is opened.
+   */
   private async consolidateThread(
     thread: ThreadRecord,
     issueNumber: number,
     trigger: ConsolidationTrigger,
-  ): Promise<{ result: SessionConsolidation; comment?: GithubComment }> {
+    errors: PollError[],
+  ): Promise<Consolidated> {
     const result = await this.session.consolidate(thread.id);
-    if (trigger === 'close' && result.events === 0) return { result };
-    const body = this.render.consolidation(result, { issueNumber, thread: thread.id, trigger });
+    if (trigger === 'close' && result.events === 0) return { result, proposals: [] };
+    const proposals = await this.openProposals(issueNumber, result.at, errors);
+    const body = this.render.consolidation(result, { issueNumber, thread: thread.id, trigger, proposals });
     const comment = await this.github.createComment(issueNumber, body);
-    return { result, comment };
+    return { result, comment, proposals };
   }
 
   private async finishConsolidation(
     githubId: string,
     issueNumber: number,
     action: ConsolidationTrigger,
-    posted: { result: SessionConsolidation; comment?: GithubComment },
+    posted: Consolidated,
     handled: HandledEvent[],
     what = 'consolidation',
   ): Promise<void> {
     const { result, comment } = posted;
+    const proposals = posted.proposals.map((link) => link.number);
     this.session.state.markProcessed(githubId, {
       issueNumber,
       result: {
         ...(comment === undefined ? {} : { comment: comment.id }),
         events: result.events,
         wrote: result.wrote.length,
+        ...(proposals.length === 0 ? {} : { proposals }),
       },
     });
-    const detail = `${result.events} event(s), ${result.wrote.length} note(s)`;
-    handled.push({ githubId, issue: issueNumber, action, ...(comment === undefined ? {} : { comment: comment.id }), detail });
+    const detail = [
+      `${result.events} event(s)`,
+      `${result.wrote.length} note(s)`,
+      ...(proposals.length === 0 ? [] : [`${proposals.length} PR(s)`]),
+    ].join(', ');
+    handled.push({
+      githubId,
+      issue: issueNumber,
+      action,
+      ...(comment === undefined ? {} : { comment: comment.id }),
+      ...(proposals.length === 0 ? {} : { proposals }),
+      detail,
+    });
     this.log(`#${issueNumber}: ${what} → ${detail}${comment === undefined ? '' : `, comment ${comment.id}`}`);
     if (result.wrote.length > 0) await this.refreshMemoryIssue(`#${issueNumber} ${action}`);
   }
 
-  // -- proposals (T4.5 opens them; the loop follows their merge) -----------------------------
+  // -- proposals (T4.5) ----------------------------------------------------------------------
+
+  /**
+   * A pull request for every documentation candidate that has none yet. Candidates come from
+   * every thread, not only the consolidated one (§6): an item whose pull request failed — a
+   * GitHub hiccup, a chooser that did not answer — is picked up by the next consolidation of
+   * any thread, and an `about: product` write by the agent gets its pull request the same way.
+   * Each item fails on its own: the error is reported, the consolidation comment still goes out.
+   */
+  private async openProposals(issueNumber: number, at: string, errors: PollError[]): Promise<ProposalLink[]> {
+    const items = await this.session.newProposals();
+    if (items.length === 0) return [];
+
+    const state = this.session.state;
+    const links: ProposalLink[] = [];
+    let opened: Map<string, GithubPullRequest>;
+    try {
+      opened = await this.proposalPullsByBranch();
+    } catch (error) {
+      // Without the listing a crashed pass cannot be told from a fresh one, and a second pull
+      // request is worse than a late one: report it, comment, and try at the next consolidation.
+      const message = `proposal pull requests not listed: ${describe(error)}`;
+      errors.push({ issue: issueNumber, message });
+      this.log(`#${issueNumber}: ${message}; proposals will be opened at the next consolidation`);
+      return [];
+    }
+    const leak = await this.leakPattern();
+    const merchants = this.merchantNames();
+    let files: GithubFile[] | undefined;
+    const mainWiki = async (): Promise<GithubFile[]> => (files ??= await this.github.readWiki());
+
+    for (const item of items) {
+      try {
+        const branch = proposalBranch(item.id);
+        const sourceThread = item.source.thread;
+
+        // Opened before a crash, with no state row: adopt it instead of opening a second one.
+        const already = opened.get(branch);
+        if (already !== undefined) {
+          const page = parseProposalMarker(already.body)?.page ?? (await this.pageOnBranch(branch, await mainWiki()));
+          if (page === undefined) {
+            throw new Error(`pull request #${already.number} on ${branch} names no wiki page; close it by hand`);
+          }
+          state.recordProposal({ itemId: item.id, pullNumber: already.number, branch, page, sourceThread });
+          links.push({ number: already.number, page, url: already.url });
+          this.log(`proposal ${item.id}: adopted #${already.number} opened on ${branch} before a restart`);
+          continue;
+        }
+
+        const choice = await this.choosePage()(this.session.wiki, item);
+        const file = findWikiFile(await mainWiki(), choice.slug);
+        if (file === undefined) throw new Error(`wiki page "${choice.slug}" is not on ${DEFAULT_BRANCH}`);
+        const addition = wikiUpdateSection(item.statement, at);
+        const page = this.session.wiki.pages.find((candidate) => candidate.slug === choice.slug);
+        const sourceIssue = state.thread(sourceThread)?.issueNumber;
+        const rendered = this.render.proposal({
+          item,
+          page: page ?? { slug: choice.slug, title: choice.slug },
+          ...(choice.why === '' ? {} : { why: choice.why }),
+          ...(choice.title === undefined ? {} : { title: choice.title }),
+          ...(sourceIssue === undefined ? {} : { sourceIssue }),
+          addition,
+          at,
+          ...(leak === undefined ? {} : { leak: leakMatches(addition, leak, merchants) }),
+        });
+
+        await this.createProposalBranch(branch);
+        await this.github.commitFile({
+          branch,
+          path: file.path,
+          content: appendWikiUpdate(file.content, item.statement, at),
+          message: `wiki(${choice.slug}): proposal from ${item.id}`,
+        });
+        const pull = await this.github.createPullRequest({
+          head: branch,
+          title: rendered.title,
+          body: `${rendered.body}\n\n${proposalMarker(item.id, choice.slug)}`,
+          labels: [this.config.labels.proposal],
+        });
+        state.recordProposal({ itemId: item.id, pullNumber: pull.number, branch, page: choice.slug, sourceThread });
+        links.push({ number: pull.number, page: choice.slug, url: pull.url });
+        const cost = choice.costUsd === undefined ? 'cost unknown' : `$${choice.costUsd.toFixed(4)}`;
+        this.log(`#${issueNumber}: proposal ${item.id} → PR #${pull.number} on \`${choice.slug}\` (${cost})`);
+      } catch (error) {
+        const message = `proposal for ${item.id} not opened: ${describe(error)}`;
+        errors.push({ issue: issueNumber, message });
+        this.log(`#${issueNumber}: ${message}; it will be retried at the next consolidation`);
+      }
+    }
+    return links;
+  }
+
+  /** Every proposal pull request by head branch; the state row is what marks an item as done. */
+  private async proposalPullsByBranch(): Promise<Map<string, GithubPullRequest>> {
+    const pulls = await this.github.listPullRequests({ headPrefix: PROPOSAL_BRANCH_PREFIX, state: 'all' });
+    return new Map(pulls.map((pull) => [pull.headRef, pull]));
+  }
+
+  /** The page a branch changes, for a pull request whose body no longer carries the marker. */
+  private async pageOnBranch(branch: string, main: readonly GithubFile[]): Promise<string | undefined> {
+    const byPath = new Map(main.map((file) => [file.path, file.content]));
+    const changed = (await this.github.readWiki(branch)).find((file) => byPath.get(file.path) !== file.content);
+    return changed === undefined ? undefined : wikiPagesFromFiles([changed])[0]?.slug;
+  }
+
+  /** A branch with no pull request behind it was left by a crash: restart it from `main`. */
+  private async createProposalBranch(branch: string): Promise<void> {
+    try {
+      await this.github.createBranch(branch);
+    } catch (error) {
+      if (githubErrorStatus(error) !== 422) throw error;
+      await this.github.deleteBranch(branch);
+      await this.github.createBranch(branch);
+      this.log(`branch ${branch} left by an earlier attempt was recreated from ${DEFAULT_BRANCH}`);
+    }
+  }
+
+  private choosePage(): PageChooser {
+    this.chooser ??= createPageChooser({ modelSpec: this.session.config.agent });
+    return this.chooser;
+  }
+
+  /** Names and form values of the configured merchants; none of them may reach a wiki page. */
+  private merchantNames(): string[] {
+    return [...new Set(Object.values(this.config.customers).flatMap((customer) => [customer.name, customer.form]))];
+  }
+
+  /** The leak grep, read from `wiki/README.md` once; a missing block turns the lint off. */
+  private async leakPattern(): Promise<RegExp | undefined> {
+    if (this.leakLoaded) return this.leak;
+    this.leakLoaded = true;
+    if (this.leakOption !== undefined) {
+      this.leak = this.leakOption === false ? undefined : this.leakOption;
+      return this.leak;
+    }
+    let reason = `no grep block in ${DEFAULT_LEAK_README}`;
+    try {
+      this.leak = await loadLeakPattern();
+    } catch (error) {
+      reason = describe(error);
+    }
+    if (this.leak === undefined) this.log(`wiki leak lint is off: ${reason}`);
+    return this.leak;
+  }
+
+  // -- proposals merged by a human -----------------------------------------------------------
 
   private async pollProposals(handled: HandledEvent[], errors: PollError[]): Promise<void> {
     const state = this.session.state;

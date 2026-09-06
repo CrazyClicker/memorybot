@@ -99,11 +99,7 @@ export class Wiki {
    */
   update(slug: string, text: string, at: string): WikiPage {
     const page = this.requirePage(slug);
-    const addition = text.trim();
-    if (addition === '') throw new Error('Wiki update text must not be empty');
-
-    const date = scenarioDate(at);
-    const section = `## Обновление от ${date}\n\n${addition}`;
+    const section = wikiUpdateSection(text, at);
     const updated: WikiPage = {
       ...page,
       content: [page.content.trimEnd(), section].filter((part) => part !== '').join('\n\n'),
@@ -136,6 +132,16 @@ export class Wiki {
     if (page === undefined) throw new WikiPageNotFoundError(slug, [...this.slugs].sort());
     return page;
   }
+}
+
+/**
+ * The dated section an approved update appends to a page. Exported so the live loop's proposal
+ * pull request (T4.5) writes byte for byte what a merged update produces here.
+ */
+export function wikiUpdateSection(text: string, at: string): string {
+  const addition = text.trim();
+  if (addition === '') throw new Error('Wiki update text must not be empty');
+  return `## Обновление от ${scenarioDate(at)}\n\n${addition}`;
 }
 
 function searchDocument(page: WikiPage): SearchDocument {
