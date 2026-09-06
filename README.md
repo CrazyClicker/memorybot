@@ -6,7 +6,8 @@ escalates to a human. Humans reply to the merchant and may leave a **coach note*
 agent. The question the project exists to answer: **how much does memory actually help, and
 which memory engine helps most?**
 
-Evals come first — the dev UI (M2) reuses the eval machinery instead of a separate runtime.
+Evals come first. The live demo on GitHub Issues (M2) and the deferred dev UI (M3) reuse the
+eval machinery instead of a separate runtime.
 
 - [ROADMAP.md](ROADMAP.md) — milestones, decisions, task list. **The plan of record.**
 - [DOMAIN.md](DOMAIN.md) — names, integrations, merchants, wiki page list.
@@ -61,7 +62,8 @@ src/
   agent/    runTurn(), system prompt, finish / remember tools       (T2.4)
   memory/   engine interface + none, naive, notes, mem0, xmemory    (T2.3, T3)
   evals/    schema, runner, checks, judge, report, cli
-  ui/       dev UI: Hono server + Vite/React client                 (M2)
+  live/     GitHub Issues loop: client, session, state, render, cli  (M2)
+  ui/       dev UI: Hono server + Vite/React client                 (M3, deferred)
 evals/
   scenarios/  *.yaml — the stories
   configs/    *.yaml — model × memory engine × read/write path

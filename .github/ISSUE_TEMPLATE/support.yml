@@ -1,0 +1,32 @@
+# The support form for the M2 live demo (ROADMAP T5.1). An issue opened through it is a
+# ticket: the live loop reads the merchant from the "Магазин" heading the form renders into
+# the body, and the `support` label is what the loop polls for.
+name: Обращение в поддержку
+description: Вопрос в поддержку «Прилавка». Первым отвечает агент; если нужно, передаёт инженеру.
+labels: [support]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Заголовок обращения — коротко о чём вопрос. Ниже выберите магазин и опишите ситуацию
+        так, как написали бы в чат поддержки.
+  - type: dropdown
+    id: merchant
+    attributes:
+      label: Магазин
+      description: От имени какого магазина обращение.
+      options:
+        - Дом и сад
+        - ВелоДвор
+        - Кофе-точка
+        - Лаванда
+    validations:
+      required: true
+  - type: textarea
+    id: message
+    attributes:
+      label: Сообщение
+      description: Что случилось или что нужно узнать. Детали настройки магазина, если они важны, пишите здесь же.
+      placeholder: Здравствуйте! …
+    validations:
+      required: true

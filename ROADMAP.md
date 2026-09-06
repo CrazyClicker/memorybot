@@ -6,6 +6,8 @@
 
 **H2 refinement:** CSV K2 now contains the Only new mode rule and the BOM/title-matching exception. Three independent pre-release questions check its branches after consolidation; `evals/controls/csv-rule-source.yaml` supplies the identical original explanation and questions directly to the same support model with none. This is a meaning-preservation check, not a claim that structured memory beats a short transcript. The control is opt-in and costs three agent turns plus three rubric judgments per repeat. Revised core estimate: 26 agent turns / up to 70 judge calls per config-repeat. No paid control or eval has been run for this refinement.
 
+**Milestone revision (2026-09-05):** the dev UI is no longer the second milestone. M2 is now a live demo on GitHub Issues in this repository: an issue is a ticket, the agent answers it as a comment with its trace, humans reply and coach in comments, documentation proposals arrive as pull requests against `wiki/`, and the recorded storyline (§9) is the hackathon submission. The dev UI moved to M3 (§10) and is not needed for the demo. Task numbering: T4 is the live loop (code), T5 the GitHub side and the recording, T6 the deferred dev UI. The M2 decisions in §2 are proposed, not confirmed.
+
 ## 0. Goal and milestones
 
 A support agent receives a customer message, reads the wiki, checks its memory and either
@@ -16,16 +18,19 @@ answers or escalates to a human. The human replies to the customer and may leave
 2. human replies on escalated tickets,
 3. coach notes attached to escalated tickets.
 
-Evals come first. The dev UI reuses the eval machinery instead of a separate runtime.
+Evals come first. The live GitHub loop (M2) and the deferred dev UI (M3) reuse the eval
+machinery instead of a separate runtime: the agent stays a pure function and the loop owns
+the state.
 
 | Milestone | Definition of done |
 |---|---|
 | **M1 — Evals report** | Execute the staged comparisons in [evals/RUNS.md](evals/RUNS.md): `--suite research` for source control, core engine matrix and long-history stress; add `--suite write-paths` when comparing writing mechanisms. Generate separate reports with `pnpm eval report`, link them in a campaign record, audit verdicts and complete hypothesis and engine/write-path decisions (T3.4). Record omitted comparisons as insufficient evidence. `--all` alone covers only core stories across all configs. |
-| **M2 — Dev UI** | A local web UI: chat as a customer, watch the agent's trace (wiki reads, memory recalls, memory writes, outcome), act as the human on escalations (reply + coach note), inspect memory and documentation proposals, accept a proposal into the wiki, advance the clock, and replay any scenario step by step. |
+| **M2 — GitHub Issues live demo** | The agent runs against this repository: an issue opened through the support form is a ticket; the agent answers, asks or escalates in a comment that carries a collapsed trace (wiki pages read, memory recalled, memory written, cost); humans reply as themselves and leave coach notes with a `/coach` comment; the loop consolidates on coach notes and on close; documentation proposals arrive as pull requests against `wiki/`, and merging one updates the live wiki; `/clock` moves the scenario clock; a pinned issue shows the memory per merchant. `DEMO.md` scripts the three-act storyline in §9, the rehearsed recording is submitted, and the README links the video, the demo issues, the merged proposal and the M1 report. |
+| **M3 — Dev UI (deferred)** | A local web UI: chat as a customer, watch the agent's trace, act as the human on escalations, inspect memory and documentation proposals, accept a proposal into the wiki, advance the clock, and replay any scenario step by step. Not needed for the hackathon demo; see §10. |
 
 ## 1. Principles for the restart
 
-1. **Evals are the first consumer.** No queue, no poll loop, no messages table in M1. The agent is a pure function `runTurn(input) -> TurnResult` and the scenario is the only state.
+1. **Evals are the first consumer.** No queue, no poll loop, no messages table in M1. The agent is a pure function `runTurn(input) -> TurnResult` and the scenario is the only state. M2 adds a poll loop around the agent, not inside it: GitHub is the queue and the UI (issues are tickets, comments are replies and coach notes, pull requests are documentation proposals), and the loop's SQLite state plays the scenario's role. `runTurn`, the engines and `Wiki` do not change for M2.
 2. **Two write paths, both first-class, selected by config.** `write: agent` — the agent calls a `remember` tool during the turn. `write: consolidate` — the engine extracts from the transcript at `consolidate` steps. `both` runs both. Every memory write is recorded with its source so the report can say which path learned a fact.
 3. **The engine's note schema is the eval's knowledge schema.** `kind / about / statement / valid_until / source` are the same words in the scenario, in the `notes` engine, in the `remember` tool and in the judge prompt.
 4. **Everything learned on a customer's ticket belongs to that customer, unless a human broadcasts it.** Product facts reach other customers in two ways only: a human accepts a documentation proposal into the wiki (`wiki_update` step), or a human marks a coach note `scope: product`, which stores the fact as `scope: shared` so every customer's recall sees it (incidents, platform-wide temporary conditions). The agent never promotes on its own. No shared-knowledge layer, no `by_config`.
@@ -49,6 +54,17 @@ Evals come first. The dev UI reuses the eval machinery instead of a separate run
 | D9 | Models | Agent: OpenAI, `gpt-5.6-terra`, pinned in the config. Judge: a stronger model, preferably another vendor (`claude-sonnet-5`) to avoid self-preference; otherwise the strongest OpenAI model priced in `MODEL_PRICES`, today `gpt-5.6-sol` (`JUDGE_FALLBACK_MODEL`). mem0 uses the OpenAI key for its LLM and embeddings. |
 | D10 | Memory read/write axes | `memory.read: hydrate \| tool \| both`, `memory.write: consolidate \| agent \| both`. Full matrix runs `write: consolidate` first, then `both`. |
 
+M2 decisions, proposed on 2026-09-05. D11, D12 and D15 confirmed on 2026-09-06; D13 revised the same day; D14 and D16 still proposed:
+
+| # | Decision | Value |
+|---|---|---|
+| D11 | Demo surface | GitHub Issues in this repository (`CrazyClicker/memorybot`): one link for the judges covers code, evals, issues and proposal PRs. Confirmed 2026-09-06. |
+| D12 | Human console | GitHub itself. Escalation = label `escalated` + assignee; the human replies as a normal comment; a coach note is a comment starting with `/coach` (`/coach product` broadcasts, D7); `pnpm live coach` files a note privately when the comment must not be public. No web UI in M2. Confirmed 2026-09-06; a public coach comment is acceptable for the demo. |
+| D13 | Bot identity | Either a dedicated machine account added as a collaborator with Write access and authenticated with a **classic** PAT (`repo` scope), or a GitHub App owned by `CrazyClicker` and installed on this repository (issues, pull requests, contents: read/write; metadata: read). Fine-grained PATs are out: GitHub does not let them act on a repository the account does not own. The App needs no second e-mail or 2FA and shows a bot badge; the T4.1 client takes either a token or app credentials. |
+| D14 | Live clock | `now = wall clock + offset`; `/clock <ISO>` moves the offset forward only; demo texts carry the dates of the recording week; every note keeps its date in the text (principle 5). |
+| D15 | Demo engine | `notes` (the only engine that honours `valid_until` and serves proposals) with `evals/configs/notes-both.yaml`, so act 1 shows the `remember` tool and act 2 shows consolidation. Confirmed 2026-09-06 for the recording. `xmemory` is to be tried in the live loop afterwards, hosted quota permitting, which is why the loop takes any eval config (`config:` in `live/config.yaml`). |
+| D16 | Transport | Polling every 10 s with a cursor, one process on a laptop. No webhooks, no public URL, no GitHub Actions in M2 (§11). |
+
 ## 3. Target repository layout
 
 ```
@@ -58,7 +74,8 @@ src/
   agent/       runTurn(), system prompt, tools: finish, remember, recall_memory
   memory/      engine.ts (interface), none.ts, naive.ts, notes.ts, mem0.ts, xmemory.ts
   evals/       schema.ts (zod), runner.ts, checks.ts, judge.ts, report.ts, cli.ts
-  ui/          M2: server (Hono) + client (Vite + React)
+  live/        M2: github.ts (client + fake), session.ts, state.ts, loop.ts, render.ts, cli.ts
+  ui/          M3 (deferred): server (Hono) + client (Vite + React)
 evals/
   README.md    format v2 (see §7)
   scenarios/   *.yaml
@@ -67,6 +84,11 @@ evals/
 wiki/
   README.md    the list of facts deliberately absent from the wiki
   *.md         Russian
+live/
+  config.yaml  repo, human logins, merchant login map and CRM profiles, engine config
+  *.db         git-ignored: state.db (threads, cursor, clock), memory.db (notes engine)
+.github/ISSUE_TEMPLATE/support.yml   the support form: merchant dropdown, subject, message
+DEMO.md        M2: the storyline in §9 with exact texts and commands
 DOMAIN.md      names, integrations, customers, wiki page list
 .env.example
 ```
@@ -197,13 +219,49 @@ parallel and meet at T2.8.
 - [x] **T3.3 (M)** `xmemory` adapter: `xmemory@3.8.3`, synchronous `fast` writes, one temporary instance per customer plus `_shared`, fixed dump reads ranked locally, and operation diagnostics with trace/console links (the API exposes no token usage). Missing credentials skip the config; rate limits retry and quota failures do not. Smoke `t33-xmemory-smoke` on scenario 3, 2026-09-04: 3 creates + 3 writes + 12 reads in 169 s, 6 extracted rows, no consolidation errors; both isolation probes and the no-proposals probe passed. Score 25 pass / 2 partial / 1 fail: the misses were answer completeness (18:00 and K2 detail), not memory isolation. The three remote instances were deleted after the run. A synthetic write-change id (`#1`) observed in the live response is now replaced with a scoped stable fallback; normal CLI runs clean up only the exact instances they created.
 - [ ] **T3.4 (L)** Staged matrix (protocol: `evals/EXPERIMENTS.md`; run catalogue and commands: [evals/RUNS.md](evals/RUNS.md)): start with the CSV source control, then five core scenarios × {none, naive, notes, mem0, xmemory}, first `read: hydrate / write: consolidate` with one repeat; review controls, judge disputes, operation counts and spend, then complete selected comparisons to three fresh repeats. The main `--suite research` selection has 31 scenario/config pairs per repeat. Add `--suite write-paths` (15 more pairs) when comparing `agent / consolidate / both` within an engine with read fixed, reusing comparable core baselines; otherwise leave writing-mode superiority untested. Run the opt-in long-history case on selected consolidate configs. Produce separate reports and a campaign record linking their evidence and omissions, audit at least 10 targeted judge verdicts, complete each hypothesis decision and the engine/write-path decision record. Record unknown internal spend separately; do not rank by total passes. **M1 done only after these reviews and decisions.**
 
-## 6. Milestone 2 — dev UI
+## 6. Milestone 2 — GitHub Issues live demo
 
-- [ ] **T4.1 (M)** Server (Hono): in-memory or SQLite session with threads, clock, engine, per-session wiki copy. Endpoints: create thread / send customer message, run agent turn (streamed steps), escalation queue, human reply + coach note, consolidate, memory inspector, proposals, accept proposal (wiki update + index reload), set clock.
-- [ ] **T4.2 (M)** Client (Vite + React, three panes): **Customer** (pick customer, chat) · **Agent trace** (wiki reads, memory recalls with kind and validity, `remember` calls, tool calls, outcome and escalation reason, cost) · **Human console** (escalation queue, reply, coach note, proposals with "accept into wiki"). Clock widget and "consolidate now".
-- [ ] **T4.3 (M)** Scenario player: load any `evals/scenarios/*.yaml`, "next step" executes one step through the same runner, checks render live next to the trace.
-- [ ] **T4.4 (S)** Memory and wiki inspectors: per-customer notes with expiry state and write source; wiki page viewer with a diff after an accepted proposal.
-- [ ] **T4.5 (S)** `DEMO.md`: the storyline in §9 with exact clicks. **M2 done.**
+The agent, the engines and the wiki are the ones the evals run; what M2 adds is a loop that
+turns GitHub events into the same thread events the runner feeds them, and GitHub back into
+the place where humans answer escalations. Track A (T4, code) and Track B (T5, GitHub side,
+texts, recording) run in parallel and meet at the rehearsal (T5.3). T4 does not edit
+`src/evals/runner.ts` while T3.4 is running; T4.7 folds the runner onto the shared session
+afterwards.
+
+Event mapping (the loop's whole contract):
+
+| GitHub event | Session event | Loop action |
+|---|---|---|
+| issue opened through the support form (label `support`) | new thread + `customer_message` | agent turn |
+| comment by a merchant login on an issue that is not `escalated` | `customer_message` | agent turn |
+| comment by a human login | `human_reply` | none; the thread stays with the human |
+| comment `/coach [product] …` by a human | `coach_note` (scope `customer` / `product`) | 🧠 reaction, minimize the comment, consolidate the thread |
+| comment `/clock <ISO>` by a human | – | move the scenario clock forward |
+| comment `/consolidate` by a human | – | consolidate the thread |
+| issue closed | `close_ticket` | consolidate the thread |
+| proposal PR merged | `wiki_update` | reload the wiki from `main`, comment on the source issue |
+
+Agent turn outcome → GitHub: `answer` → comment + label `agent:answered`; `ask` → comment +
+`agent:asked`, the loop waits for the merchant; `escalate` → the customer-facing reply as a
+comment + label `escalated` + assign the human logins, the escalation reason inside the
+collapsed trace. Once `escalated` the agent never posts on that issue again.
+
+### T4 — Live loop (Track A)
+
+- [ ] **T4.1 (M)** `src/live/github.ts`: one thin client over `@octokit/rest` + GraphQL with a token: issues with the `support` label updated since a cursor, their comments, create comment, add/remove labels, assign, add a reaction, minimize a comment (`minimizeComment`, reason OUTDATED), edit an issue body, create a branch + commit + PR through the contents API, list PRs by head-branch prefix with merge state, read `wiki/*.md` from `main`, delete an issue (GraphQL, owner token). Every method returns plain data; an in-memory fake implements the same interface for tests. Polling, not webhooks (D16).
+- [ ] **T4.2 (M)** `src/live/session.ts` + `state.ts`: the runner's glue as a reusable object. `Session({config, engine, wiki, clock})` with `customerMessage`, `agentTurn` (hydrate through `engine.recall` → `runTurn` with the recall callback → `agent_reply` → `engine.write` of the dated, customer-scoped writes; identical to the runner's `agent_turn` step), `humanReply`, `coachNote`, `close`, `consolidate(thread)` (under `write: agent` the transcript is reduced to coach notes, as in the runner), `wikiReload(pages)` and `newProposals()`. State in SQLite `live/state.db`: threads and events with their GitHub ids, processed event ids, clock offset, proposal ↔ PR. Memory is the `notes` engine on `live/memory.db` through its `path` option; `reset()` runs only from `pnpm live reset`. Clock per D14. Config is an eval config file (`evals/configs/notes-both.yaml` by default); its `judge` is ignored.
+- [ ] **T4.3 (M)** `src/live/loop.ts`: poll every 10 s, map GitHub events to session events by the table above, act, record. Customer = the merchant field of the issue form (the `### Магазин` heading in the body), falling back to the login map in `live/config.yaml`; humans = the logins listed there; the bot's own comments are skipped. Idempotency: an event id is marked processed together with the comment it produced, in one transaction, so a crash mid-turn re-runs the turn but never posts twice. Errors on one issue are logged and never stop the loop; `AgentDidNotFinishError` posts nothing, retries on the next two polls, then labels `agent:failed`.
+- [ ] **T4.4 (S)** `src/live/render.ts`: the bot comment is the customer-facing reply followed by a collapsed `<details>` "Как я отвечал": outcome, wiki pages read, memory recalled (kind, scope, validity, statement), memory written this turn, escalation reason, cost and latency. The consolidation comment lists the notes written (kind, scope, `valid_until`, text) and links the proposal PRs. The pinned "🧠 Память агента" issue body is regenerated after every write: one section per merchant plus shared notes, expired ones struck through. Snapshot-tested offline.
+- [ ] **T4.5 (S)** Proposal PRs: after every consolidation, each new item from `engine.proposals()` becomes a PR on branch `wiki/proposal-<id>` that appends `## Обновление от <date>` + statement to `wiki/<slug>.md`, the same text `Wiki.update` produces. The page is chosen by one small structured call over the wiki index (slug + one line why); the human may edit the page or the text before merging, so on merge the loop reloads the whole wiki from `main` instead of replaying the statement. The PR body links the source issue; merchant names were already stripped by the engine, and the `wiki/README.md` leak grep runs on the diff.
+- [ ] **T4.6 (S)** `pnpm live run|once|status|memory|coach|clock|reset`: `run` polls forever, `once` does one poll (tests, rehearsals), `status` prints threads and clock, `memory [--customer]` dumps the notes DB, `coach <issue> [--product] <text>` files a coach note without a public comment (the private path; `/coach` in a comment is the on-camera path), `clock <ISO>` moves the clock, `reset` clears the local DBs and with `--issues` deletes the demo issues and closes proposal PRs using the owner's `gh auth token`. Without a token the commands run against the fake client on a recorded fixture.
+- [ ] **T4.7 (S, after T3.4 lands)** Fold the runner's `agent_turn` and `consolidate` steps onto `Session` so evals and the live loop share one implementation. Behaviour-preserving: `pnpm test` and one cached scenario run before and after produce identical result JSON apart from timing.
+
+### T5 — GitHub side, demo texts and recording (Track B)
+
+- [ ] **T5.1 (S)** Repository setup on `CrazyClicker/memorybot`: issue form `.github/ISSUE_TEMPLATE/support.yml` (merchant dropdown with the four merchants from `DOMAIN.md`, message, auto-label `support`; the issue title is the subject); labels `support`, `agent:answered`, `agent:asked`, `escalated`, `agent:failed`, `proposal`; the bot identity (D13) in `.env`; `live/config.yaml` with the repository, the human logins, the merchant form values and login map, the CRM profiles and the engine config; the pinned memory issue, its number recorded in `live/config.yaml`. Optional second account for the merchant so the two roles look different on camera. Touches nothing under `src/`, so it runs alongside T3.4. Done 2026-09-06: bot `crazyclicker-bot` (collaborator with Write, classic PAT `repo`), the six labels, pinned issue #1 «Память агента», `live/config.yaml`, the form file. The form is live only once `.github/ISSUE_TEMPLATE/support.yml` is on `main`.
+- [ ] **T5.2 (M)** `DEMO.md`: the storyline in §9 with every issue text, human reply, `/coach` note and `/clock` value copy-paste ready, adapted from scenarios 2, 1 and 3 with dates shifted to the recording week, and for each step what the viewer must see (label, trace block, consolidation comment, PR, memory issue). Texts stay Russian; the narration is in the hackathon's language.
+- [ ] **T5.3 (S)** Rehearsal: run the storyline end-to-end twice from a clean state (`pnpm live reset --issues`) with `LLM_CACHE` off, timing every step; fix prompt and rendering glitches; decide what to cut so the video stays under seven minutes.
+- [ ] **T5.4 (S)** Record and submit: screen recording of the storyline with the poller log picture-in-picture, captions or voice-over; README gets a "Live demo" section linking the video, the demo issues, the merged proposal PR and the M1 report. **M2 done.**
 
 ## 7. Eval format v2 — diff against `evals/README.md`
 
@@ -239,20 +297,64 @@ parallel and meet at T2.8.
 - **Judge self-preference:** judge model ≠ agent model where a second key exists; spot-check verdicts.
 - **Russian content and the judge:** the judge prompt states the language explicitly; regex checks in scenarios must use Russian stems (`/таблиц|table/i`) where the reply is Russian.
 - **Cost surprises:** print the estimated call count before a matrix run and require `--yes`.
+- **Coach notes are public comments (M2).** Minimizing hides them from the default view only. Say in the video that a real deployment keeps them internal; `pnpm live coach` is the private path.
+- **Two clocks on camera (M2).** Demo texts carry the dates of the recording week; `/clock` is forward-only; the bot's trace block prints the clock it used, so an expired note is explainable.
+- **Latency on camera (M2).** 15–40 s per agent turn, up to a minute for a consolidation that also opens a PR. Rehearse with timing, keep the poller log visible, cut the waits.
+- **Double posting and lost events (M2).** One transaction per event; the comment id is stored before the labels; the cursor is the last processed comment id, not a timestamp.
+- **Public repository (M2).** Every demo text is public and fictional; tokens live only in `.env`; the bot token is scoped to this repository.
+- **Runner churn (M2).** T3.4 runs in a parallel session; T4 does not edit `src/evals/runner.ts` until T4.7.
 
 ## 9. Demo storyline (M2)
 
-1. Merchant A asks about dropped CSV rows. Trace: wiki pages read, memory empty, outcome `escalate` with a data-loss reason.
-2. Human console: reply to A, add a coach note with the merchant's setup, the product internals, and the fix date.
-3. Advance the clock, consolidate. Memory inspector shows a personal note, a temporal note with expiry, and a product note flagged as a documentation candidate, each with its write source.
-4. Merchant A asks again later. Trace shows the recall hit; the answer cites the scheduled fix.
-5. Merchant B asks the product-level question. Agent escalates (isolation); the proposals pane shows the candidate. Accept it into the wiki, re-run B's turn: answered from the wiki page. Flywheel closed.
-6. Load scenario 1 in the player and step through; checks go green in real time.
+Three acts, one merchant story each, all adapted from existing scenarios so the texts and the
+expected behaviour are already known. Every step names what the viewer sees on GitHub.
 
-## 10. Later / out of scope for the hackathon
+**Act 1 — learning in passing (scenario 2, ≈ 90 s).** «Кофе-точка» opens a support issue about
+delivery zones and mentions on the way that they use two-stage payments and deliver only within
+Томская область. The bot answers from the wiki; the trace block shows two `remember` writes
+(personal). Second issue: "can the order wait two weeks?" The bot answers without asking about
+the payment mode; the trace shows the recall hit. Nobody from support touched either ticket.
+
+**Act 2 — escalation, coach note, proposal, isolation (scenario 1, ≈ 4 min).** «Дом и сад»
+reports 37 rows missing after a clean CSV import → label `escalated`, assignee, the reason in the
+trace. The engineer replies as themselves, then adds `/coach …` with the BOM cause, the workaround
+until the release date and the manual load. The bot reacts, minimizes the note, consolidates: a
+comment lists the personal, temporal and undocumented notes and links a new PR "wiki: BOM breaks
+the sku header". «Дом и сад» asks whether the workaround is permanent → answered from memory,
+cites the release date. «ВелоДвор» asks the product-level question → escalated, no mention of
+«Дом и сад» (isolation on camera). The engineer merges the PR → «ВелоДвор» asks again → answered
+from the wiki. Flywheel closed. Optional tail: `/clock` past the release, `/coach` that it
+shipped, «Дом и сад»'s integrator asks → the answer says the workaround is no longer needed.
+
+**Act 3 — broadcast and expiry (scenario 3, ≈ 2 min).** «Кофе-точка» reports card payments
+failing → escalated. The engineer posts `/coach product` with the incident and its 18:00 horizon
+→ the consolidation comment shows a `scope: shared` temporal note. «Лаванда» asks at once →
+answered from shared memory, no new escalation. `/clock` past 18:00 → «Лаванда» asks again → the
+bot says the status is unknown and does not claim recovery.
+
+**Closing shot.** The pinned memory issue: notes per merchant, one shared, one struck through
+as expired; then the M1 report with the engine comparison.
+
+Optional beats if time allows: an `ask` outcome (P-005 clarifying question, then the answer on
+the merchant's follow-up); `customer-setup-change` (the merchant changes their payment mode and
+the newer note wins); `human-reply-only` (the agent learns from the operator's public reply with
+no coach note at all).
+
+## 10. Milestone 3 — dev UI (deferred past the hackathon)
+
+Kept as specified on 2026-09-03; nothing here is needed for the M2 demo. After T4.7 the UI
+server wraps the same `Session` the live loop uses.
+
+- [ ] **T6.1 (M)** Server (Hono): in-memory or SQLite session with threads, clock, engine, per-session wiki copy. Endpoints: create thread / send customer message, run agent turn (streamed steps), escalation queue, human reply + coach note, consolidate, memory inspector, proposals, accept proposal (wiki update + index reload), set clock.
+- [ ] **T6.2 (M)** Client (Vite + React, three panes): **Customer** (pick customer, chat) · **Agent trace** (wiki reads, memory recalls with kind and validity, `remember` calls, tool calls, outcome and escalation reason, cost) · **Human console** (escalation queue, reply, coach note, proposals with "accept into wiki"). Clock widget and "consolidate now".
+- [ ] **T6.3 (M)** Scenario player: load any `evals/scenarios/*.yaml`, "next step" executes one step through the same runner, checks render live next to the trace.
+- [ ] **T6.4 (S)** Memory and wiki inspectors: per-customer notes with expiry state and write source; wiki page viewer with a diff after an accepted proposal.
+- [ ] **T6.5 (S)** Dev UI walkthrough appended to `DEMO.md`. **M3 done.**
+
+## 11. Later / out of scope for the hackathon
 
 - `internal_discussion` step with withdrawn hypotheses.
 - Agent-initiated promotion (the agent proposing `scope: shared` itself). Today only humans broadcast.
 - English-language scenarios for an international demo.
 - HTML report; per-check trend across runs.
-- Real ticketing integration (queue, poll loop, messages table).
+- Live loop as a GitHub Actions workflow (the memory DB would have to be committed to a branch), webhook transport, GitHub App identity.

@@ -1,0 +1,57 @@
+# Live GitHub loop configuration (ROADMAP §6, T5.1). Committed; secrets live in .env.
+
+repo: CrazyClicker/memorybot
+poll_seconds: 10
+
+# The eval config the loop runs. Its `judge` block is ignored. Any config works, so xmemory
+# can be tried after the recording (ROADMAP D15).
+config: evals/configs/notes-both.yaml
+
+labels:
+  support: support          # opened through the form; the loop polls issues with this label
+  answered: agent:answered
+  asked: agent:asked
+  escalated: escalated
+  failed: agent:failed
+  proposal: proposal        # on documentation-proposal pull requests
+
+# Number of the pinned "🧠 Память агента" issue whose body the loop regenerates after every
+# write. Filled in once the issue exists.
+memory_issue: 1
+
+# Support engineers. Their comments are `human_reply` events; `/coach`, `/clock` and
+# `/consolidate` are accepted only from them.
+humans:
+  - CrazyClicker
+
+# Merchants (DOMAIN.md). `form` is the dropdown value in .github/ISSUE_TEMPLATE/support.yml;
+# `logins` is the fallback when an issue was not opened through the form. `name` and
+# `profile` are the CRM record the agent sees, the same text the scenarios use.
+customers:
+  dom_i_sad:
+    form: Дом и сад
+    name: Дом и сад
+    profile: >-
+      Магазин товаров для дома, тариф «Бизнес», около 1 200 товаров.
+      Контактное лицо: Марина, менеджер по ассортименту.
+    logins: []
+  velo_dvor:
+    form: ВелоДвор
+    name: ВелоДвор
+    profile: >-
+      Магазин велозапчастей, тариф «Старт», около 400 товаров.
+    logins: []
+  kofe_tochka:
+    form: Кофе-точка
+    name: Кофе-точка
+    profile: >-
+      Обжарщик кофе, тариф «Старт», около 30 позиций.
+      Контактное лицо: Антон, владелец.
+    logins: []
+  lavanda:
+    form: Лаванда
+    name: Лаванда
+    profile: >-
+      Косметика ручной работы, тариф «Бизнес», около 150 позиций.
+      Контактное лицо: Ольга, владелица.
+    logins: []

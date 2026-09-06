@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Support agent with learning memory: evals first, dev UI second",
+  "description": "Support agent with learning memory: evals first, live GitHub demo second",
   "packageManager": "pnpm@10.32.0",
   "engines": {
     "node": ">=22.5",
