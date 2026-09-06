@@ -71,3 +71,52 @@ export type {
   SessionOptions,
   SessionTurn,
 } from './session.ts';
+export {
+  customerByForm,
+  customerByLogin,
+  DEFAULT_LIVE_CONFIG_PATH,
+  DEFAULT_POLL_SECONDS,
+  isHuman,
+  LiveConfigSchema,
+  LiveCustomerSchema,
+  LiveLabelsSchema,
+  loadLiveConfig,
+  parseLiveConfig,
+  sameLogin,
+  sessionCustomers,
+} from './config.ts';
+export type { LiveConfig, LiveCustomer, LiveLabels } from './config.ts';
+export {
+  FORM_MERCHANT_HEADING,
+  FORM_MESSAGE_HEADING,
+  issueMessage,
+  parseCommand,
+  parseIssueForm,
+  resolveIssueCustomer,
+} from './events.ts';
+export type { HumanCommand, ResolvedCustomer } from './events.ts';
+export {
+  abortableSleep,
+  COACH_REACTION,
+  consoleLogger,
+  githubIds,
+  ISSUES_SINCE_KEY,
+  LiveLoop,
+  MAX_TURN_ATTEMPTS,
+  plainRenderer,
+  PROPOSAL_BRANCH_PREFIX,
+  threadIdFor,
+} from './loop.ts';
+export type {
+  ConsolidationContext,
+  ConsolidationTrigger,
+  HandledEvent,
+  Logger,
+  LoopAction,
+  LoopOptions,
+  LoopRenderer,
+  PollError,
+  PollResult,
+  ReplyContext,
+  Sleep,
+} from './loop.ts';
