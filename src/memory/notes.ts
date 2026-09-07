@@ -137,6 +137,9 @@ export class NotesMemoryEngine implements MemoryEngine {
     }
 
     this.database = new DatabaseSync(options.path ?? ':memory:');
+    // A file store is shared by the live loop and `pnpm live coach` (T4.6): wait for a lock
+    // instead of failing with SQLITE_BUSY.
+    this.database.exec('PRAGMA busy_timeout = 5000');
     this.database.exec(CREATE_TABLE);
     this.nextId = nextGeneratedId(this.allItems());
     this.modelSpec = options.modelSpec;
@@ -188,6 +191,11 @@ export class NotesMemoryEngine implements MemoryEngine {
 
     const { notes, usage } = await this.extract(thread);
     this.recordUsage(usage);
+
+    // Another process may have written to the same file since this one opened it (the live
+    // loop and `pnpm live coach`, T4.6): number after every stored note, not after this
+    // object's last one, or `INSERT OR IGNORE` would drop the new note without a word.
+    this.nextId = Math.max(this.nextId, nextGeneratedId(this.allItems()));
 
     const written: MemoryItem[] = [];
     for (const extracted of notes) {

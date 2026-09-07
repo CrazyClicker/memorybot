@@ -46,12 +46,36 @@ pairs for comparing writing modes. `--all` retains its core-directory × all-con
 | `pnpm eval run` | Run scenarios against configs, write result JSON |
 | `pnpm eval report` | Report one run; repeat `--run` to combine suites and reuse core baselines for writing comparisons |
 | `pnpm eval lint-wiki` | Planned wiki leak lint; currently exits 2 (T1.6 still open) |
+| `pnpm live <command>` | GitHub Issues live loop (M2); see [Live loop](#live-loop-m2) below |
 | `pnpm test` | Unit tests (vitest) |
 | `pnpm typecheck` | `tsc --noEmit` |
 
 `pnpm eval <command> --help` prints a command's options. Commands whose ROADMAP task has not
 landed yet exit with code 2 and name the task — a missing feature never looks like a passing
 run.
+
+## Live loop (M2)
+
+`pnpm live` runs the same agent, engine and wiki over GitHub Issues in the repository named in
+[live/config.yaml](live/config.yaml) (ROADMAP §6). The bot identity comes from `.env`
+(`GITHUB_TOKEN`, or the `GITHUB_APP_*` variables). Without one, or with `--fake`, every command
+replays the recording in [live/fixture.yaml](live/fixture.yaml) onto an in-memory GitHub, keeps
+its state in `live/fake-*.db` and prints what the bot would have posted. Only GitHub is faked:
+the model calls are real, so one `pnpm live once --fake` over the shipped recording (act 1 of
+the demo: two «Кофе-точка» issues and a `/consolidate`) costs a few cents and about half a minute.
+
+| Command | What it does |
+|---|---|
+| `pnpm live run` | Poll every `poll_seconds` until Ctrl-C; the poller log stays on screen during the demo |
+| `pnpm live once [--json]` | One poll, then exit (tests, rehearsals) |
+| `pnpm live status [--json]` | Threads, proposals, the scenario clock and the cursor, from the local state alone |
+| `pnpm live memory [--customer <id>]` | The notes the agent holds; with `--customer`, only what that merchant's threads can see |
+| `pnpm live coach <issue> [--product] <text…>` | File a coach note privately and consolidate the thread; a `/coach` comment is the on-camera path |
+| `pnpm live clock [<ISO>]` | Show the scenario clock, or move it forward (the memory issue is repainted) |
+| `pnpm live reset [--issues [--yes]]` | Clear the local databases; `--issues` also deletes the demo issues, closes the proposal PRs and empties the memory issue as the owner (`gh auth token`), after printing the plan |
+
+`pnpm live <command> --help` lists the options. `--config <path>` points at another live config,
+`--fixture <path>` at another recording.
 
 ## Layout
 

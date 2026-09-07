@@ -179,7 +179,8 @@ const OUTCOME_TEXT: Record<Outcome, string> = {
 /** The customer-facing reply, then the collapsed «Как я отвечал» block. */
 export function renderReply(turn: SessionTurn, options: ReplyRenderOptions = {}): string {
   const lines = [`- **Итог:** ${OUTCOME_TEXT[turn.outcome]}.`];
-  if (turn.escalationReason !== undefined) {
+  // The model sometimes fills the reason with a dash on an answer; only an escalation has one.
+  if (turn.outcome === 'escalate' && turn.escalationReason !== undefined) {
     lines.push(`- **Причина эскалации:** ${oneLine(turn.escalationReason)}`);
   }
   lines.push(`- **База знаний:** ${describeWikiUse(turn, options.wiki)}`);

@@ -446,3 +446,16 @@ describe('noteLine and the helpers', () => {
     );
   });
 });
+
+describe('renderReply: the escalation reason belongs to escalations', () => {
+  it('drops a reason the model attached to an answer or a question', () => {
+    // Seen live: the finish tool sometimes carries `escalation_reason: "-"` on an answer.
+    for (const outcome of ['answer', 'ask'] as const) {
+      const text = renderReply(sessionTurn({ outcome, escalationReason: '-' }));
+      expect(text).not.toContain('Причина эскалации');
+    }
+    expect(renderReply(sessionTurn({ outcome: 'escalate', escalationReason: 'Потеря данных.' }))).toContain(
+      '- **Причина эскалации:** Потеря данных.',
+    );
+  });
+});

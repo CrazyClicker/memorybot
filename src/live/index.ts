@@ -123,6 +123,8 @@ export {
   threadIdFor,
 } from './loop.ts';
 export type {
+  CoachInput,
+  CoachResult,
   HandledEvent,
   Logger,
   LoopAction,
@@ -131,6 +133,19 @@ export type {
   PollResult,
   Sleep,
 } from './loop.ts';
+export { CliError, COMMON_OPTIONS, helpText, LIVE_COMMANDS, parseLiveCli } from './args.ts';
+export type { LiveCommandName, LiveCommandSpec, ParsedLiveCli } from './args.ts';
+export {
+  DEFAULT_FIXTURE_PATH,
+  fakeFromFixture,
+  FixtureSchema,
+  loadFixture,
+  parseFixture,
+  readWikiFiles,
+} from './fixture.ts';
+export type { FakeFromFixtureOptions, Fixture, FixtureEvent } from './fixture.ts';
+export { DEFAULT_LIVE_PATHS, describeFakeCalls, describeOffset, runLiveCli } from './commands.ts';
+export type { LiveCliOptions, LivePaths, StatusReport, ThreadStatus, Writer } from './commands.ts';
 export {
   createRenderer,
   formatTimestamp,

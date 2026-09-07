@@ -500,3 +500,33 @@ describe('NotesMemoryEngine.list', () => {
     expect(await engine().list()).toEqual([]);
   });
 });
+
+describe('NotesMemoryEngine: one file shared by two processes (T4.6)', () => {
+  it('numbers a new note after the notes another engine wrote to the same file', async () => {
+    const directory = await mkdtemp(join(tmpdir(), 'prilavok-notes-'));
+    try {
+      const path = join(directory, 'memory.db');
+      const first = new NotesMemoryEngine({
+        path,
+        modelSpec: SPEC,
+        model: model(extraction([{ kind: 'personal', about: 'alpha', statement: 'Двухстадийная оплата.', source_events: [1] }])),
+      });
+      const second = new NotesMemoryEngine({
+        path,
+        modelSpec: SPEC,
+        model: model(extraction([{ kind: 'personal', about: 'alpha', statement: 'Возит только по Томской области.', source_events: [1] }])),
+      });
+      try {
+        expect((await first.consolidate(thread(), NOW)).map((item) => item.id)).toEqual(['notes-1']);
+        // Opened before the first note existed, so its counter still says 1.
+        expect((await second.consolidate(thread(), NOW)).map((item) => item.id)).toEqual(['notes-2']);
+        expect((await second.list()).map((item) => item.id)).toEqual(['notes-1', 'notes-2']);
+      } finally {
+        first.close();
+        second.close();
+      }
+    } finally {
+      await rm(directory, { recursive: true, force: true });
+    }
+  });
+});

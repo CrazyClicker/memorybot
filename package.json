@@ -11,6 +11,7 @@
   },
   "scripts": {
     "eval": "tsx src/evals/cli.ts",
+    "live": "tsx src/live/cli.ts",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit"

@@ -220,6 +220,9 @@ export class LiveState {
     this.clock = options.clock ?? (() => new Date());
     this.database = new DatabaseSync(this.path);
     this.database.exec('PRAGMA foreign_keys = ON');
+    // `pnpm live coach` and `pnpm live clock` write while `pnpm live run` polls (T4.6): wait for
+    // a lock instead of failing with SQLITE_BUSY.
+    this.database.exec('PRAGMA busy_timeout = 5000');
     this.database.exec(SCHEMA);
   }
 

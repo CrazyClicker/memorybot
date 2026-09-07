@@ -1,0 +1,60 @@
+# A recording of the GitHub side for `pnpm live` without a bot identity in .env (ROADMAP T4.6).
+# The commands replay it onto an in-memory GitHub instead of calling the real one and print
+# what the bot would have posted; only GitHub is faked, the model calls are real.
+#
+# Events play in order. Issues are numbered 1, 2, … as they appear, comment ids likewise, so
+# `comment.issue` names an issue by that number and issue 1 is the pinned memory issue that
+# `memory_issue: 1` in live/config.yaml points at. Append new events at the end: the numbers of
+# everything before them are already in live/fake-state.db. `pnpm live reset` clears the fake
+# state so the recording plays again.
+#
+# The recording is act 1 of the demo storyline (ROADMAP §9, scenario setup-from-the-question):
+# «Кофе-точка» asks about delivery zones and states their setup in passing; a human asks for a
+# consolidation; a second issue from the same merchant can be answered only from memory.
+events:
+  - issue:
+      title: 🧠 Память агента
+      author: CrazyClicker
+      body: _Заметок нет._
+
+  - issue:
+      title: У покупателя из другого региона нет ни одного способа доставки
+      author: anton-kofe-tochka
+      labels: [support]
+      body: |
+        ### Магазин
+
+        Кофе-точка
+
+        ### Сообщение
+
+        Здравствуйте! Мы «Кофе-точка», обжарщики из Томска, на «Прилавке» вторую неделю.
+        Обжариваем под заказ раз в неделю, по пятницам, поэтому оплату включили
+        двухстадийную: покупатель оформляет заказ, а списание подтверждаем, когда кофе
+        обжарен и уезжает в доставку. Возим пока только по Томской области, одна зона, плюс
+        самовывоз из цеха.
+
+        Вопрос: вчера покупатель из Кемерово написал, что у него при оформлении нет ни
+        одного способа доставки и заказ не проходит. Это так и должно быть при нашей
+        настройке или мы что-то сломали?
+
+  - comment:
+      issue: 2
+      author: CrazyClicker
+      body: /consolidate
+
+  - issue:
+      title: Можно ли оставить заказ ждать две недели?
+      author: anton-kofe-tochka
+      labels: [support]
+      body: |
+        ### Магазин
+
+        Кофе-точка
+
+        ### Сообщение
+
+        Снова «Кофе-точка». Покупатель оформил заказ во вторник, а вчера написал, что срочно
+        уезжает и заберёт кофе только недели через две. Можно просто оставить его заказ
+        висеть как есть до возвращения, а обжарить уже ближе к делу? Или нам что-то нужно
+        нажать в панели?

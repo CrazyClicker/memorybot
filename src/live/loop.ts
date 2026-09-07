@@ -26,6 +26,9 @@
  * - What goes back to GitHub is rendered by `render.ts` (T4.4). The pinned memory issue named
  *   in `live/config.yaml` is repainted after every write and every clock move, best effort,
  *   and is never handled as a ticket even when it carries the support label.
+ * - `coach` and `moveClock` are the command-line forms of `/coach` and `/clock` (T4.6, D12):
+ *   the same session calls and the same consolidation, but no GitHub object, so nothing is
+ *   marked processed and the note itself never reaches GitHub.
  */
 import { AgentDidNotFinishError } from '../agent/index.ts';
 import type { Outcome } from '../evals/schema.ts';
@@ -148,6 +151,26 @@ interface Consolidated {
   readonly proposals: ProposalLink[];
 }
 
+/** `pnpm live coach <issue> [--product] <text>`: the private coach path. */
+export interface CoachInput {
+  readonly issue: number;
+  readonly author: string;
+  readonly text: string;
+  /** `product` is the human broadcast gate (D7); defaults to `customer`. */
+  readonly scope?: 'customer' | 'product';
+}
+
+export interface CoachResult {
+  readonly issue: number;
+  readonly thread: string;
+  readonly result: SessionConsolidation;
+  /** The consolidation comment the loop posted, when it posted one. */
+  readonly comment?: number;
+  readonly proposals: ProposalLink[];
+  /** Proposal pull requests that could not be opened; the consolidation itself succeeded. */
+  readonly errors: PollError[];
+}
+
 export type Logger = (line: string) => void;
 export type Sleep = (ms: number, signal?: AbortSignal) => Promise<void>;
 
@@ -263,6 +286,43 @@ export class LiveLoop {
     const next = holdBack === undefined ? latest : earlierIso(holdBack, latest);
     if (next !== undefined && next !== since) state.set(ISSUES_SINCE_KEY, next);
     return { issues: issues.length, handled, errors, ...(next === undefined ? {} : { since: next }) };
+  }
+
+  // -- command-line entry points (T4.6) ------------------------------------------------------
+
+  /**
+   * The private coach path (`pnpm live coach`, D12): the note is recorded on the session and
+   * never posted, then the thread is consolidated exactly as after a `/coach` comment — the
+   * proposal pull requests, the consolidation comment and the memory issue included. Nothing
+   * goes into `processed`: there is no GitHub object to guard against.
+   */
+  async coach(input: CoachInput): Promise<CoachResult> {
+    const thread = this.session.state.threadByIssue(input.issue);
+    if (thread === undefined) {
+      throw new Error(`Issue #${input.issue} has no thread: the loop has not seen it yet`);
+    }
+    const scope = input.scope ?? 'customer';
+    this.session.coachNote({ thread: thread.id, author: input.author, content: input.text, scope });
+    this.log(`#${input.issue}: ${scope} coach note by ${input.author} recorded privately`);
+    const errors: PollError[] = [];
+    const posted = await this.consolidateThread(thread, input.issue, 'coach', errors);
+    await this.reportConsolidation(input.issue, `${scope} note`, posted, 'coach');
+    return {
+      issue: input.issue,
+      thread: thread.id,
+      result: posted.result,
+      ...(posted.comment === undefined ? {} : { comment: posted.comment.id }),
+      proposals: posted.proposals,
+      errors,
+    };
+  }
+
+  /** `/clock` from the command line (`pnpm live clock`): move the clock, repaint the memory issue. */
+  async moveClock(target: string): Promise<string> {
+    const now = this.session.setClock(target);
+    this.log(`clock → ${now}`);
+    await this.refreshMemoryIssue('the clock move');
+    return now;
   }
 
   // -- issues --------------------------------------------------------------------------------
@@ -574,21 +634,29 @@ export class LiveLoop {
         ...(proposals.length === 0 ? {} : { proposals }),
       },
     });
-    const detail = [
-      `${result.events} event(s)`,
-      `${result.wrote.length} note(s)`,
-      ...(proposals.length === 0 ? [] : [`${proposals.length} PR(s)`]),
-    ].join(', ');
     handled.push({
       githubId,
       issue: issueNumber,
       action,
       ...(comment === undefined ? {} : { comment: comment.id }),
       ...(proposals.length === 0 ? {} : { proposals }),
-      detail,
+      detail: consolidationDetail(posted),
     });
-    this.log(`#${issueNumber}: ${what} → ${detail}${comment === undefined ? '' : `, comment ${comment.id}`}`);
-    if (result.wrote.length > 0) await this.refreshMemoryIssue(`#${issueNumber} ${action}`);
+    await this.reportConsolidation(issueNumber, what, posted, action);
+  }
+
+  /** The log line and the memory-issue repaint every consolidation ends with, GitHub-triggered or not. */
+  private async reportConsolidation(
+    issueNumber: number,
+    what: string,
+    posted: Consolidated,
+    after: string,
+  ): Promise<void> {
+    const { comment } = posted;
+    this.log(
+      `#${issueNumber}: ${what} → ${consolidationDetail(posted)}${comment === undefined ? '' : `, comment ${comment.id}`}`,
+    );
+    if (posted.result.wrote.length > 0) await this.refreshMemoryIssue(`#${issueNumber} ${after}`);
   }
 
   // -- proposals (T4.5) ----------------------------------------------------------------------
@@ -839,6 +907,15 @@ export class LiveLoop {
 
 function describe(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+/** «3 event(s), 1 note(s), 1 PR(s)»: what a consolidation produced, for the log and the handled event. */
+function consolidationDetail(posted: Consolidated): string {
+  return [
+    `${posted.result.events} event(s)`,
+    `${posted.result.wrote.length} note(s)`,
+    ...(posted.proposals.length === 0 ? [] : [`${posted.proposals.length} PR(s)`]),
+  ].join(', ');
 }
 
 function laterIso(a: string | undefined, b: string): string {
