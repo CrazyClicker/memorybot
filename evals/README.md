@@ -304,7 +304,10 @@ a specific later answer. Use recorded source, write and recall timestamps to aud
 
 `pnpm eval run --scenario <file> --config <file> [--repeat N]` runs in-process: the scenario
 is the only state, the agent is a pure function `runTurn(input) -> TurnResult`, no queue, no
-database of tickets. Per step:
+database of tickets. Since T4.7 the steps drive the live loop's `Session`
+(`src/live/session.ts`) over an in-memory `LiveState`, so the eval measures the same agent
+turn, consolidation and scoped recall the GitHub demo runs; the runner keeps the step clock,
+the checks, the judge, the wiki copy, the probes and the result file. Per step:
 
 - `customer_message`, `human_reply`, `coach_note`: append to the thread transcript.
 - `agent_turn`: `memory = engine.recall(customer, latestCustomerMessage, now)` (read `hydrate`/`both`), then `runTurn` with the wiki, the CRM record, the clock and the tools the config enables (`read_page`, `recall_memory`, `remember`, `finish`). `memoryWrites` from `remember` go to `engine.write` with `scope: customer` forced and `learnedFrom` = the thread's customer.

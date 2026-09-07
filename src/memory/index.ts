@@ -16,6 +16,8 @@ export type {
   ThreadEventType,
   ThreadTranscript,
 } from './engine.ts';
+export { createMemoryEngine } from './factory.ts';
+export type { CreateMemoryEngineOptions } from './factory.ts';
 export { createNaiveMemoryEngine, DEFAULT_NAIVE_RECALL_TOKENS, NaiveMemoryEngine, renderTranscript } from './naive.ts';
 export type { NaiveMemoryOptions } from './naive.ts';
 export { createNoneMemoryEngine, NoneMemoryEngine } from './none.ts';

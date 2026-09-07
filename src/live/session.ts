@@ -5,14 +5,20 @@
  * and consolidations; the live loop (T4.3) turns GitHub events into the same things. `Session`
  * is that middle layer with the transcripts, the clock and the consolidation bookkeeping in
  * `LiveState` (SQLite) instead of a per-run object, so a restarted process carries on where it
- * stopped. `agentTurn` and `consolidate` follow the runner's `agent_turn` and `consolidate`
- * steps line by line, helpers included; T4.7 folds the runner onto this object and removes the
- * duplicate. Until then, a change to one belongs in the other too.
+ * stopped. Since T4.7 the runner drives a `Session` over an in-memory `LiveState` too:
+ * `agentTurn`, `consolidate` and `recall` are the one implementation of the eval's
+ * `agent_turn` and `consolidate` steps and its probes, so a change here is measured by the
+ * evals and shipped by the loop at once.
  *
  * Decisions:
  * - The clock is `wall clock + offset` (D14). `setClock` moves the offset forward only, and
  *   every event, recall, write and note is stamped with it, never with GitHub's timestamps: a
  *   comment posted after `/clock` jumped a week would otherwise carry a date from the past.
+ *   The runner owns its clock instead (a step's `at`, verbatim) and passes it as
+ *   `scenarioClock`; `setClock` then refuses.
+ * - `agentTurn` records the turn on the transcript before the engine write and lets the caller
+ *   observe it in between (`recorded`): the runner scores the turn there, so a failed write
+ *   still leaves a scored step in the result, as it always did.
  * - A turn is stored as JSON on its `agent_reply` event. The loop can then post a reply it
  *   computed before a crash instead of paying for it twice, and `pnpm live status` can show
  *   outcomes and costs without the eval result files.
@@ -24,7 +30,7 @@
 import type { LanguageModel } from 'ai';
 import { z } from 'zod';
 
-import { runTurn, type TurnInput } from '../agent/index.ts';
+import { runTurn, type RunTurnOptions, type TurnInput, type TurnResult } from '../agent/index.ts';
 import { formatMemory } from '../agent/prompt.ts';
 import { loadConfig } from '../evals/load.ts';
 import {
@@ -33,10 +39,10 @@ import {
   RecallObservationSchema,
   StepResultSchema,
 } from '../evals/schema.ts';
-import { createMemoryEngine, type RunAgent } from '../evals/runner.ts';
 import {
   canRecall,
   cloneMemoryItem,
+  createMemoryEngine,
   createNotesMemoryEngine,
   dateStatement,
   estimateTokens,
@@ -55,6 +61,12 @@ import {
 
 export const DEFAULT_SESSION_CONFIG = 'evals/configs/notes-both.yaml';
 export const DEFAULT_MEMORY_PATH = 'live/memory.db';
+
+/** The agent as the session calls it: `runTurn`, or a stand-in for offline tests. */
+export type RunAgent = (
+  input: TurnInput,
+  options?: RunTurnOptions,
+) => Promise<TurnResult>;
 
 // ---------------------------------------------------------------------------------------------
 // Records
@@ -120,8 +132,27 @@ export interface SessionOptions {
   readonly customers: Readonly<Record<string, Customer>>;
   /** Wall clock; the scenario clock is this plus the offset stored in `state` (D14). */
   readonly clock?: () => Date;
+  /**
+   * A caller that owns the scenario clock passes it here, verbatim: the eval runner, where a
+   * step's `at` is the clock. It replaces the D14 wall clock + offset, and `setClock` refuses.
+   */
+  readonly scenarioClock?: () => string;
   /** Injectable for offline tests; normal sessions call the agent. */
   readonly runAgent?: RunAgent;
+}
+
+export interface AgentTurnOptions {
+  /**
+   * The turn's id, also the `step` on its memory writes; defaults to `turn-<n>`. The runner
+   * passes the `agent_turn` step id, so result ids read as they did before T4.7.
+   */
+  readonly id?: string;
+  /**
+   * Runs once the turn is recorded on the transcript and before its memory writes reach the
+   * engine. The runner scores the turn here: a write that fails afterwards still leaves the
+   * scored step in the result.
+   */
+  readonly recorded?: (turn: SessionTurn) => void | Promise<void>;
 }
 
 export class ClockMovesForwardOnlyError extends Error {
@@ -146,6 +177,7 @@ export class Session {
   private currentWiki: Wiki;
   private readonly customers: Readonly<Record<string, Customer>>;
   private readonly clock: () => Date;
+  private readonly scenarioClock: (() => string) | undefined;
   private readonly runAgent: RunAgent;
 
   constructor(options: SessionOptions) {
@@ -155,6 +187,7 @@ export class Session {
     this.state = options.state;
     this.customers = options.customers;
     this.clock = options.clock ?? (() => new Date());
+    this.scenarioClock = options.scenarioClock;
     this.runAgent = options.runAgent ?? runTurn;
   }
 
@@ -164,13 +197,20 @@ export class Session {
 
   // -- clock (D14) ---------------------------------------------------------------------------
 
-  /** The scenario clock: wall clock plus the stored offset, as an ISO timestamp. */
+  /**
+   * The scenario clock: wall clock plus the stored offset as an ISO timestamp, or whatever the
+   * owning caller's `scenarioClock` says, verbatim.
+   */
   now(): string {
+    if (this.scenarioClock !== undefined) return this.scenarioClock();
     return new Date(this.clock().getTime() + this.state.clockOffsetMs()).toISOString();
   }
 
   /** Move the scenario clock to `target` (`/clock <ISO>`); returns the new `now()`. */
   setClock(target: string): string {
+    if (this.scenarioClock !== undefined) {
+      throw new Error('The scenario clock belongs to the caller of this session and cannot be moved here');
+    }
     const targetMs = Date.parse(target);
     if (!Number.isFinite(targetMs)) throw new Error(`Clock target must be an ISO timestamp, got "${target}"`);
     const current = this.now();
@@ -268,19 +308,32 @@ export class Session {
     return this.state.closeThread(threadId, at ?? this.now());
   }
 
-  // -- the agent turn (the runner's `agent_turn` step) ---------------------------------------
+  // -- memory --------------------------------------------------------------------------------
 
   /**
-   * Hydrate through `engine.recall`, run the agent with the live recall callback, record the
-   * `agent_reply`, then hand the agent's `remember` writes to the engine dated and scoped to
-   * this customer. An agent that throws (`AgentDidNotFinishError`) leaves the thread as it
-   * was, so the loop can retry the same turn.
+   * Scoped recall: what the engine returns minus anything that is neither shared nor this
+   * customer's own, as copies. The agent's hydration and `recall_memory` tool and the eval's
+   * `memory_recall` probes all read memory through here.
    */
-  async agentTurn(threadId: string): Promise<SessionTurn> {
+  async recall(customer: string, query: string, at: string = this.now()): Promise<MemoryItem[]> {
+    return (await this.engine.recall(customer, query, at))
+      .filter((item) => canRecall(item, customer))
+      .map(cloneMemoryItem);
+  }
+
+  // -- the agent turn (the eval's `agent_turn` step) -----------------------------------------
+
+  /**
+   * Hydrate through `recall`, run the agent with the live recall callback, record the
+   * `agent_reply` and let `options.recorded` see it, then hand the agent's `remember` writes
+   * to the engine dated and scoped to this customer. An agent that throws
+   * (`AgentDidNotFinishError`) leaves the thread as it was, so the loop can retry the same turn.
+   */
+  async agentTurn(threadId: string, options: AgentTurnOptions = {}): Promise<SessionTurn> {
     const thread = this.requireOpenThread(threadId);
     const transcript = this.state.transcript(threadId);
     const now = this.now();
-    const turnId = `turn-${this.turns(threadId).length + 1}`;
+    const turnId = options.id ?? `turn-${this.turns(threadId).length + 1}`;
     const query = latestCustomerMessage(transcript);
     const customer = this.customers[thread.customer];
     if (customer === undefined) throw new Error(`Unknown customer "${thread.customer}"`);
@@ -290,7 +343,7 @@ export class Session {
       customerId: string, queryText: string, at: string, via: 'hydrate' | 'tool' = 'tool',
     ): Promise<MemoryItem[]> => {
       const started = performance.now();
-      const returned = await scopedRecall(this.engine, customerId, queryText, at);
+      const returned = await this.recall(customerId, queryText, at);
       recalls.push({
         via, query: queryText, returned: returned.map(cloneMemoryItem),
         latencyMs: Math.max(0, performance.now() - started),
@@ -341,6 +394,7 @@ export class Session {
       { type: 'agent_reply', at: now, content: result.reply },
       { turnId, payload: turn },
     );
+    await options.recorded?.(turn);
     if (memoryWrites.length > 0) await this.engine.write(memoryWrites, now);
     return turn;
   }
@@ -521,19 +575,8 @@ export function wikiPagesFromFiles(
 }
 
 // ---------------------------------------------------------------------------------------------
-// Helpers shared with the runner in spirit; T4.7 makes them one implementation
+// Helpers
 // ---------------------------------------------------------------------------------------------
-
-async function scopedRecall(
-  engine: MemoryEngine,
-  customer: string,
-  query: string,
-  now: string,
-): Promise<MemoryItem[]> {
-  return (await engine.recall(customer, query, now))
-    .filter((item) => canRecall(item, customer))
-    .map(cloneMemoryItem);
-}
 
 function agentWrite(
   item: MemoryItem,

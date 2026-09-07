@@ -1,24 +1,15 @@
-import type { LanguageModel } from 'ai';
-
-import { runTurn, type RunTurnOptions, type TurnInput, type TurnResult } from '../agent/index.ts';
-import { formatMemory } from '../agent/prompt.ts';
-import { estimateTokens } from '../memory/text.ts';
-import {
-  canRecall,
-  cloneMemoryItem,
-  createMem0MemoryEngine,
-  createNaiveMemoryEngine,
-  createNoneMemoryEngine,
-  createNotesMemoryEngine,
-  createXmemoryMemoryEngine,
-  dateStatement,
-  type MemoryEngine,
-  type MemoryItem,
-  type Mem0Client,
-  type XmemoryClient,
-  type ThreadEvent,
-  type ThreadTranscript,
-} from '../memory/index.ts';
+/**
+ * The scenario runner: one scenario × config × repeat, in process, the scenario as the only
+ * state. Since T4.7 the steps drive a `Session` (`src/live/session.ts`) over an in-memory
+ * `LiveState`, the same object the live loop drives from GitHub events: the agent turn, the
+ * consolidation and the scoped recall are implemented once, there. What stays here is the
+ * eval's own business — the step clock, the checks and the judge, the per-step cost
+ * accounting, the wiki updates, the probes and the result file.
+ */
+import { runTurn } from '../agent/index.ts';
+import { type RunAgent, Session } from '../live/session.ts';
+import { LiveState } from '../live/state.ts';
+import { cloneMemoryItem, type MemoryEngine, type MemoryItem } from '../memory/index.ts';
 import { loadWiki, Wiki } from '../wiki/index.ts';
 import { checkProbePatterns, checkTurn, scoreOf } from './checks.ts';
 import { createSkipJudge, type Judge } from './judge.ts';
@@ -33,10 +24,8 @@ import type {
   StepResult,
 } from './schema.ts';
 
-export type RunAgent = (
-  input: TurnInput,
-  options?: RunTurnOptions,
-) => Promise<TurnResult>;
+export { createMemoryEngine, type CreateMemoryEngineOptions } from '../memory/index.ts';
+export type { RunAgent } from '../live/session.ts';
 
 export interface RunScenarioOptions {
   readonly engine: MemoryEngine;
@@ -59,48 +48,14 @@ export interface RunScenarioOptions {
 export type RepeatScenarioOptions = Omit<RunScenarioOptions, 'repeat'>;
 
 interface RunState {
+  /** The scenario clock: the `at` of the latest step that had one. */
   now: string;
-  readonly threads: Map<string, ThreadTranscript>;
-  readonly consolidatedEventCounts: Map<string, number>;
+  /** Thread ids in the order their first message opened them: the consolidation order. */
+  readonly threadOrder: string[];
   readonly steps: StepResult[];
   readonly consolidations: RunResult['consolidations'];
   readonly probes: ProbeResult[];
   costUsd: number;
-}
-
-export interface CreateMemoryEngineOptions {
-  /** Direct model injection keeps factory-level notes tests offline. */
-  readonly model?: LanguageModel;
-  /** Direct client injection keeps factory-level mem0 tests offline. */
-  readonly mem0Client?: Mem0Client;
-  /** Direct client injection keeps factory-level xmemory tests offline. */
-  readonly xmemoryClient?: XmemoryClient;
-}
-
-/** Build an engine from the complete config because structured extraction uses its agent model. */
-export function createMemoryEngine(
-  config: Config,
-  options: CreateMemoryEngineOptions = {},
-): MemoryEngine {
-  switch (config.memory.engine) {
-    case 'none':
-      return createNoneMemoryEngine();
-    case 'naive':
-      return createNaiveMemoryEngine();
-    case 'notes':
-      return createNotesMemoryEngine({ modelSpec: config.agent, model: options.model });
-    case 'mem0': {
-      if (config.agent.provider !== 'openai') {
-        throw new Error('mem0 comparison requires an OpenAI agent model for like-for-like extraction');
-      }
-      return createMem0MemoryEngine({
-        client: options.mem0Client,
-        llmModel: config.agent.model,
-      });
-    }
-    case 'xmemory':
-      return createXmemoryMemoryEngine({ client: options.xmemoryClient });
-  }
 }
 
 /**
@@ -119,8 +74,7 @@ export async function runScenario(
   const startedAt = wallTime(wallClock);
   const state: RunState = {
     now: scenario.world.clock,
-    threads: new Map(),
-    consolidatedEventCounts: new Map(),
+    threadOrder: [],
     steps: [],
     consolidations: [],
     probes: [],
@@ -128,23 +82,25 @@ export async function runScenario(
   };
 
   const judge = options.judge ?? createSkipJudge('no judge configured for this run');
+  // The transcripts live in SQLite for the run only; the engine is reused across repeats and
+  // reset here, so the session must not dispose it.
+  const liveState = new LiveState({ path: ':memory:' });
   try {
     await options.engine.reset();
-    const wiki = await wikiForRun(scenario, options.wiki);
+    const session = new Session({
+      config,
+      engine: options.engine,
+      wiki: await wikiForRun(scenario, options.wiki),
+      state: liveState,
+      customers: scenario.world.customers,
+      scenarioClock: () => state.now,
+      runAgent: options.runAgent ?? runTurn,
+    });
     for (const step of scenario.steps) {
       if (step.at !== undefined) state.now = step.at;
-      await executeStep(
-        step,
-        scenario,
-        config,
-        options.engine,
-        wiki,
-        state,
-        options.runAgent ?? runTurn,
-        judge,
-      );
+      await executeStep(step, scenario, session, state, judge);
     }
-    await executeProbes(scenario, options.engine, state, judge);
+    await executeProbes(scenario, session, state, judge);
   } catch (error) {
     return result(
       state,
@@ -158,6 +114,8 @@ export async function runScenario(
       options.cached,
       errorMessage(error),
     );
+  } finally {
+    liveState.close();
   }
 
   return result(
@@ -191,123 +149,67 @@ export async function runScenarioRepeats(
 async function executeStep(
   step: Step,
   scenario: Scenario,
-  config: Config,
-  engine: MemoryEngine,
-  wiki: Wiki,
+  session: Session,
   state: RunState,
-  runAgent: RunAgent,
   judge: Judge,
 ): Promise<void> {
   switch (step.type) {
     case 'customer_message': {
-      let thread = state.threads.get(step.thread);
-      if (thread === undefined) {
-        thread = { id: step.thread, customer: step.customer, events: [] };
-        state.threads.set(step.thread, thread);
-      } else if (thread.customer !== step.customer) {
-        throw new Error(`Thread "${step.thread}" belongs to "${thread.customer}", not "${step.customer}"`);
-      } else if (thread.closedAt !== undefined) {
-        throw new Error(`Thread "${step.thread}" is already closed`);
-      }
-      thread.events.push({ type: 'customer_message', at: step.at, content: step.content });
+      const known = session.thread(step.thread) !== undefined;
+      session.customerMessage({
+        thread: step.thread,
+        customer: step.customer,
+        content: step.content,
+        at: step.at,
+      });
+      if (!known) state.threadOrder.push(step.thread);
       return;
     }
 
     case 'agent_turn': {
-      const thread = requireOpenThread(state, step.thread);
-      const query = latestCustomerMessage(thread);
-      const recalls: NonNullable<StepResult['recalls']> = [];
-      const recall = async (
-        customer: string, queryText: string, now: string, via: 'hydrate' | 'tool' = 'tool',
-      ): Promise<MemoryItem[]> => {
-        const started = performance.now();
-        const returned = await scopedRecall(engine, customer, queryText, now);
-        recalls.push({
-          via, query: queryText, returned: returned.map(cloneMemoryItem),
-          latencyMs: Math.max(0, performance.now() - started),
-          estimatedTokens: returned.length === 0 ? 0 : estimateTokens(formatMemory(returned, now)),
-        });
-        return returned;
-      };
-      const memory = config.memory.read === 'tool'
-        ? []
-        : await recall(thread.customer, query, state.now, 'hydrate');
-      const customer = scenario.world.customers[thread.customer];
-      if (customer === undefined) throw new Error(`Unknown customer "${thread.customer}"`);
-
-      const turn = await runAgent(
-        {
-          now: state.now,
-          customer: { id: thread.customer, ...customer },
-          thread: cloneThread(thread),
-          memory,
-          tools: {
-            recallMemory: config.memory.read !== 'hydrate',
-            remember: config.memory.write !== 'consolidate',
-          },
-          wiki,
-          model: config.agent,
-        },
-        { recallMemory: recall },
-      );
-
-      thread.events.push({ type: 'agent_reply', at: state.now, content: turn.reply });
-      const memoryWrites = turn.memoryWrites.map((item, index) =>
-        agentWrite(item, thread, step.id, index, state.now),
-      );
-      // Deterministic checks first (free), then the judged ones: that is also the order the
-      // report reads them in. Every expectation gets a verdict; neither gates the other.
-      const checks = checkTurn(step.expect, turn);
-      const judged = await judge.turn(step.expect, turn, scenario.knowledge);
-      state.steps.push({
+      await session.agentTurn(step.thread, {
         id: step.id,
-        thread: step.thread,
-        at: state.now,
-        outcome: turn.outcome,
-        reply: turn.reply,
-        ...(turn.escalationReason === undefined ? {} : { escalationReason: turn.escalationReason }),
-        trace: turn.trace,
-        memoryWrites,
-        checks: [...checks, ...judged.checks],
-        usage: turn.usage,
-        ...(turn.costUsd === undefined ? {} : { costUsd: turn.costUsd }),
-        latencyMs: turn.latencyMs,
-        recalls,
-        responseLatencyMs: turn.latencyMs + recalls
-          .filter((observation) => observation.via === 'hydrate')
-          .reduce((total, observation) => total + observation.latencyMs, 0),
-        judgeCostUsd: judged.costUsd,
+        // Scored once the turn is on the transcript and before its memory writes are persisted:
+        // a write that fails afterwards ends the run, but the paid turn keeps its verdicts.
+        recorded: async (turn) => {
+          // Deterministic checks first (free), then the judged ones: that is also the order the
+          // report reads them in. Every expectation gets a verdict; neither gates the other.
+          const checks = checkTurn(step.expect, turn);
+          const judged = await judge.turn(step.expect, turn, scenario.knowledge);
+          state.steps.push({
+            ...turn,
+            checks: [...checks, ...judged.checks],
+            judgeCostUsd: judged.costUsd,
+          });
+          state.costUsd += (turn.costUsd ?? 0) + judged.costUsd;
+        },
       });
-      state.costUsd += (turn.costUsd ?? 0) + judged.costUsd;
-      if (memoryWrites.length > 0) await engine.write(memoryWrites, state.now);
       return;
     }
 
     case 'human_reply': {
-      const thread = requireOpenThread(state, step.thread);
-      thread.events.push({
-        type: 'human_reply',
-        at: step.at,
+      session.humanReply({
+        thread: step.thread,
         author: step.author,
         content: step.content,
+        at: step.at,
       });
       return;
     }
 
     case 'coach_note': {
-      const thread = requireThread(state, step.thread);
-      thread.events.push({
-        type: 'coach_note',
-        at: step.at,
+      session.coachNote({
+        thread: step.thread,
         author: step.author,
-        scope: step.scope,
         content: step.content,
+        scope: step.scope,
+        at: step.at,
       });
       return;
     }
 
     case 'close_ticket': {
-      requireOpenThread(state, step.thread).closedAt = step.at;
+      session.close(step.thread, step.at);
       return;
     }
 
@@ -317,30 +219,25 @@ async function executeStep(
         if (item === undefined) throw new Error(`Unknown knowledge item "${id}"`);
         return item.statement;
       });
-      wiki.update(step.page, statements.join('\n\n'), state.now);
+      session.wiki.update(step.page, statements.join('\n\n'), state.now);
       return;
     }
 
     case 'consolidate': {
+      // One boundary over every thread with new events, in the order they were opened; the
+      // engine's extraction spend for the whole boundary is charged to this step.
       const wrote: MemoryItem[] = [];
       const errors: ConsolidationError[] = [];
+      const engine = session.engine;
       const costBefore = engine.usage?.().costUsd;
-      for (const thread of state.threads.values()) {
-        const previousCount = state.consolidatedEventCounts.get(thread.id) ?? 0;
-        if (thread.events.length === previousCount) continue;
-
-        const transcript = config.memory.write === 'agent'
-          ? coachNotesSince(thread, previousCount)
-          : cloneThread(thread);
+      for (const thread of state.threadOrder) {
         try {
-          const items = await engine.consolidate(transcript, state.now);
-          wrote.push(...items.map(cloneMemoryItem));
-          state.consolidatedEventCounts.set(thread.id, thread.events.length);
+          wrote.push(...(await session.consolidate(thread)).wrote);
         } catch (error) {
           // The engine wrote nothing for this thread: a memory gap the later checks measure,
           // not a reason to abandon the paid turns around it. The thread stays pending, so the
           // next consolidate step offers it again.
-          errors.push({ thread: thread.id, error: errorMessage(error) });
+          errors.push({ thread, error: errorMessage(error) });
         }
       }
       const costAfter = engine.usage?.().costUsd;
@@ -362,17 +259,17 @@ async function executeStep(
 
 async function executeProbes(
   scenario: Scenario,
-  engine: MemoryEngine,
+  session: Session,
   state: RunState,
   judge: Judge,
 ): Promise<void> {
   for (const probe of scenario.probes ?? []) {
     // `undefined` is "the engine cannot serve this", which checks and judge report as skipped.
     const returned = probe.type === 'memory_recall'
-      ? await scopedRecall(engine, probe.customer, probe.query, state.now)
-      : engine.proposals === undefined
+      ? await session.recall(probe.customer, probe.query, state.now)
+      : session.engine.proposals === undefined
         ? undefined
-        : (await engine.proposals()).map(cloneMemoryItem);
+        : (await session.engine.proposals()).map(cloneMemoryItem);
 
     const judged = await judge.probe(probe, returned, scenario.knowledge);
     state.costUsd += judged.costUsd;
@@ -383,77 +280,6 @@ async function executeProbes(
       ...(returned === undefined ? {} : { returned }),
     });
   }
-}
-
-async function scopedRecall(
-  engine: MemoryEngine,
-  customer: string,
-  query: string,
-  now: string,
-): Promise<MemoryItem[]> {
-  return (await engine.recall(customer, query, now))
-    .filter((item) => canRecall(item, customer))
-    .map(cloneMemoryItem);
-}
-
-function agentWrite(
-  item: MemoryItem,
-  thread: ThreadTranscript,
-  step: string,
-  index: number,
-  now: string,
-): MemoryItem {
-  return {
-    ...cloneMemoryItem(item),
-    id: `agent-${thread.id}-${step}-${index + 1}`,
-    learnedFrom: thread.customer,
-    scope: 'customer',
-    statement: dateStatement(item.statement, now),
-    source: { thread: thread.id, step, via: 'agent' },
-    createdAt: now,
-  };
-}
-
-function coachNotesSince(thread: ThreadTranscript, eventIndex: number): ThreadTranscript {
-  return {
-    id: thread.id,
-    customer: thread.customer,
-    events: thread.events.slice(eventIndex).filter((event) => event.type === 'coach_note').map(cloneEvent),
-    ...(thread.closedAt === undefined ? {} : { closedAt: thread.closedAt }),
-  };
-}
-
-function cloneThread(thread: ThreadTranscript): ThreadTranscript {
-  return {
-    id: thread.id,
-    customer: thread.customer,
-    events: thread.events.map(cloneEvent),
-    ...(thread.closedAt === undefined ? {} : { closedAt: thread.closedAt }),
-  };
-}
-
-function cloneEvent(event: ThreadEvent): ThreadEvent {
-  return { ...event };
-}
-
-function requireThread(state: RunState, id: string): ThreadTranscript {
-  const thread = state.threads.get(id);
-  if (thread === undefined) throw new Error(`Unknown thread "${id}"`);
-  return thread;
-}
-
-function requireOpenThread(state: RunState, id: string): ThreadTranscript {
-  const thread = requireThread(state, id);
-  if (thread.closedAt !== undefined) throw new Error(`Thread "${id}" is already closed`);
-  return thread;
-}
-
-function latestCustomerMessage(thread: ThreadTranscript): string {
-  for (let index = thread.events.length - 1; index >= 0; index -= 1) {
-    const event = thread.events[index];
-    if (event?.type === 'customer_message') return event.content;
-  }
-  throw new Error(`Thread "${thread.id}" has no customer message`);
 }
 
 async function wikiForRun(scenario: Scenario, source: Wiki | undefined): Promise<Wiki> {

@@ -23,6 +23,7 @@ import {
   createSessionEngine,
   openSession,
   Session,
+  type SessionTurn,
   SessionTurnSchema,
   wikiPagesFromFiles,
 } from './session.ts';
@@ -144,6 +145,7 @@ function fixture(
   memory: Partial<Config['memory']> = {},
   runAgent?: RunAgent,
   statePath = ':memory:',
+  scenarioClock?: () => string,
 ): Fixture {
   const engine = new RecordingEngine();
   const calls: Fixture['calls'] = [];
@@ -156,6 +158,7 @@ function fixture(
     state,
     customers: CUSTOMERS,
     clock: () => holder.wall,
+    ...(scenarioClock === undefined ? {} : { scenarioClock }),
     runAgent: async (input, options) => {
       calls.push({ input, options });
       return runAgent === undefined ? turn() : runAgent(input, options);
@@ -192,6 +195,26 @@ describe('Session clock (D14)', () => {
     expect(() => f.session.setClock('2026-09-07T00:00:00Z')).toThrow(ClockMovesForwardOnlyError);
     expect(() => f.session.setClock('yesterday')).toThrow(/ISO timestamp/);
     expect(f.session.now()).toBe('2026-09-08T18:35:00.000Z');
+  });
+
+  it('reads a caller-owned scenario clock verbatim and refuses to move it (the runner)', async () => {
+    let at = '2026-09-01T09:00:00+03:00';
+    const f = fixture({}, undefined, ':memory:', () => at);
+    expect(f.session.now()).toBe('2026-09-01T09:00:00+03:00');
+
+    f.session.customerMessage({ thread: 't', customer: 'dom_i_sad', content: 'q' });
+    at = '2026-09-01T10:00:00+03:00';
+    const result = await f.session.agentTurn('t');
+    expect(f.session.transcript('t').events.map((event) => event.at)).toEqual([
+      '2026-09-01T09:00:00+03:00', '2026-09-01T10:00:00+03:00',
+    ]);
+    expect(f.calls[0]?.input.now).toBe('2026-09-01T10:00:00+03:00');
+    expect(result.at).toBe('2026-09-01T10:00:00+03:00');
+    expect(f.engine.recalls[0]?.now).toBe('2026-09-01T10:00:00+03:00');
+    expect(result.memoryWrites).toEqual([]);
+
+    expect(() => f.session.setClock('2026-09-02T00:00:00Z')).toThrow(/belongs to the caller/);
+    expect(f.session.now()).toBe('2026-09-01T10:00:00+03:00');
   });
 });
 
@@ -374,6 +397,64 @@ describe('Session.agentTurn', () => {
     f.state.openThread({ id: 'empty', customer: 'dom_i_sad', openedAt: WALL });
     await expect(f.session.agentTurn('empty')).rejects.toThrow(/no customer message/);
     expect(f.calls).toEqual([]);
+  });
+
+  it('takes the caller\'s turn id and shows the recorded turn before the memory write (the runner)', async () => {
+    const order: string[] = [];
+    const f = fixture({}, async () => turn({ memoryWrites: [item({ id: 'w', statement: 'Факт.' })] }));
+    const write = f.engine.write.bind(f.engine);
+    f.engine.write = async (items, now) => {
+      order.push('write');
+      await write(items, now);
+    };
+    f.session.customerMessage({ thread: 't', customer: 'dom_i_sad', content: 'q' });
+
+    const result = await f.session.agentTurn('t', {
+      id: 'step-7',
+      recorded: (recorded) => {
+        order.push('recorded');
+        expect(recorded.id).toBe('step-7');
+        expect(f.session.turns('t').map((entry) => entry.id)).toEqual(['step-7']);
+        expect(f.engine.writes).toEqual([]);
+      },
+    });
+
+    expect(order).toEqual(['recorded', 'write']);
+    expect(result.id).toBe('step-7');
+    expect(result.memoryWrites).toEqual([
+      expect.objectContaining({ id: 'agent-t-step-7-1', source: { thread: 't', step: 'step-7', via: 'agent' } }),
+    ]);
+    expect(f.engine.writes).toEqual([{ items: result.memoryWrites, now: WALL }]);
+    // The default numbering counts every recorded turn, whatever it was called.
+    f.session.customerMessage({ thread: 't', customer: 'dom_i_sad', content: 'more' });
+    expect((await f.session.agentTurn('t')).id).toBe('turn-2');
+  });
+
+  it('keeps the recorded turn when the memory write fails afterwards', async () => {
+    const f = fixture({}, async () => turn({ memoryWrites: [item({ id: 'w' })] }));
+    f.engine.write = async () => {
+      throw new Error('write failed');
+    };
+    f.session.customerMessage({ thread: 't', customer: 'dom_i_sad', content: 'q' });
+    let seen: SessionTurn | undefined;
+
+    await expect(f.session.agentTurn('t', { recorded: (recorded) => { seen = recorded; } })).rejects.toThrow('write failed');
+
+    expect(seen?.id).toBe('turn-1');
+    expect(f.session.turns('t')).toEqual([seen]);
+    expect(f.session.transcript('t').events.map((event) => event.type)).toEqual(['customer_message', 'agent_reply']);
+  });
+});
+
+describe('Session.recall', () => {
+  it('drops other customers\' items and defaults to the session clock', async () => {
+    const f = fixture();
+    const items = await f.session.recall('dom_i_sad', 'запрос');
+    expect(items.map((entry) => entry.id)).toEqual(['shared-memory', 'private-dom']);
+    expect(f.engine.recalls).toEqual([{ customer: 'dom_i_sad', query: 'запрос', now: WALL }]);
+
+    await f.session.recall('velo_dvor', 'ещё', '2026-09-07T00:00:00Z');
+    expect(f.engine.recalls[1]).toEqual({ customer: 'velo_dvor', query: 'ещё', now: '2026-09-07T00:00:00Z' });
   });
 });
 
